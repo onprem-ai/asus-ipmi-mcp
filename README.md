@@ -1,15 +1,73 @@
 # asus-ipmi-mcp
 
-MCP server that lets an AI agent operate a physical machine through its **ASUS IPMI Expansion Card**:
-see the screen, click, type, press keys, read sensors, control power, and mount ISO images — the same
-things you'd do in the card's web KVM, but as tools. No browser, no Java, no VNC.
-
-Use cases: unattended OS installs, BIOS changes, rescue on headless boxes, provisioning on-prem
-servers from Claude Code / Cursor / any MCP client.
+Give your AI agent hands and eyes on a physical machine. This [MCP](https://modelcontextprotocol.io)
+server connects to an **ASUS IPMI Expansion Card** and lets an agent (Claude Code, Cursor, Claude
+Desktop, …) see the machine's screen, move the mouse, type, press keys, read sensors, control power
+and update the card's firmware — exactly what you'd do in the card's web console, but as tools.
+No browser, no Java, no VNC.
 
 ```
-agent ──MCP(stdio)──> asus-ipmi-mcp ──HTTPS/WSS──> IPMI card (AST2600) ──USB HID + VGA──> host
+agent ──MCP (stdio)──> asus-ipmi-mcp ──HTTPS/WebSocket──> IPMI card (AST2600) ──USB keyboard/mouse + video──> host
 ```
+
+> [!IMPORTANT]
+> **Unofficial project.** asus-ipmi-mcp is an independent community project. It is **not affiliated
+> with, endorsed by, or supported by ASUSTeK Computer Inc. or American Megatrends (AMI)**. "ASUS",
+> "AMI" and "MegaRAC" are trademarks of their respective owners and are used only to describe
+> compatible hardware. It talks to the card through the same interfaces its own web console uses,
+> learned by observing them. Use at your own risk; for official support contact ASUS.
+
+## What it's good for
+
+- **Install or reinstall an OS without anyone at the machine:** watch the installer, click through it,
+  type answers.
+- **Fix machines that dropped off the network:** log in on the local console and repair the network,
+  a service or a broken boot. The kind of problem that usually needs someone with a monitor and keyboard.
+- **Change BIOS settings remotely:** reboot into setup, navigate menus, save.
+- **Provision a fleet of on-prem boxes** step by step with an agent that can both see and act, for
+  machines that have no PXE or automation set up yet.
+- **Keep the IPMI card itself up to date:** check for and apply card firmware updates with built-in
+  safety checks.
+
+## See it in action
+
+Everything below was done by an agent through this MCP server, on a headless ProArt X870E-CREATOR
+WIFI running Rocky Linux, with no monitor attached.
+
+| 1. `screenshot`: the agent sees the login screen | 2. `click` on the user: password prompt |
+|---|---|
+| ![Login screen seen through the IPMI card](docs/screenshots/01-login-screen.png) | ![Password prompt after clicking the user](docs/screenshots/02-password-prompt.png) |
+| **3. `type_text` the password: logged in** | **4. `press_keys` + `type_text` in a terminal: network repaired** |
+| ![GNOME desktop after logging in](docs/screenshots/03-desktop.png) | ![Terminal showing the host got its IP back](docs/screenshots/04-network-fixed.png) |
+
+The last one is a real repair: after the IPMI card was installed, the host's network cards got new
+PCIe names and the old network profiles no longer matched, so the machine had no IP. The agent opened
+a terminal over the KVM, found the mismatch with `nmcli`, rebound the profiles to the cards' MAC
+addresses and brought the link up. No SSH was possible, because the machine had no network.
+
+## What it can do
+
+| Area | Capabilities |
+|---|---|
+| **See** | Screenshots of the host screen (full or cropped for small text), wait until the screen changes, wake a sleeping display |
+| **Act** | Absolute mouse: click, double/right click, drag, scroll. Keyboard: type text, keys and combos (`f2`, `del`, `ctrl+alt+delete`, `super`, …) |
+| **Know** | BMC firmware, host power state, sensors, KVM status (resolution, other viewers) |
+| **Power** *(opt-in)* | On, off, graceful shutdown, restart; one-time boot device (CD, PXE, USB, BIOS setup) |
+| **Virtual media** *(opt-in, experimental)* | Attach an ISO from an NFS/CIFS share as a virtual CD |
+| **Card firmware** | Check for updates; download, verify and flash *(opt-in)* with dry run and confirmation token |
+
+### Status
+
+| Feature | State |
+|---|---|
+| Screen, mouse, keyboard, KVM status | ✅ tested on hardware |
+| System info, sensors (read) | ✅ tested |
+| Firmware check, prepare + dry run on the card | ✅ tested |
+| Firmware flash via MCP | ⚠️ same API as a tested manual flash, but not yet run through MCP |
+| Power control, boot override | ⚠️ implemented via Redfish, not yet tested on hardware |
+| Virtual media | ⚠️ implemented from the web console's API, not yet tested |
+
+Reports from other boards and firmware versions are very welcome. Please open an issue.
 
 ## Supported hardware
 
@@ -135,8 +193,8 @@ Typical agent loop: `screenshot` → decide → `click` / `type_text` / `press_k
 
 ## Safety
 
-This server can type passwords, power-cycle machines and boot installers. Keep `ASUS_IPMI_ALLOW_POWER`
-and `ASUS_IPMI_ALLOW_MEDIA` off unless needed, use a dedicated card user, put the card on a management
+This server can type passwords, power-cycle machines, boot installers and flash firmware. Keep
+`ASUS_IPMI_ALLOW_POWER`, `ASUS_IPMI_ALLOW_MEDIA` and `ASUS_IPMI_ALLOW_FIRMWARE` off unless needed, use a dedicated card user, put the card on a management
 network, and review what the agent does — it's physical access over the network.
 
 ## Development
@@ -148,6 +206,15 @@ ASUS_IPMI_HOST=… ASUS_IPMI_PASSWORD=… npm run smoke     # read-only tools + 
 
 Protocol notes are in the source headers (`src/kvm.js`, `src/media.js`).
 
-## License
+Manual hardware tests in `test/` (they act on a real card and host – read them before running):
+`smoke.js` (read-only + screenshot), `unlock.js` (types a password on the host),
+`firmware-dryrun.js` (uploads firmware to the card and cancels; the card restarts).
 
-MIT for this code. The video decoder is AMI property and is fetched from your own device at runtime.
+## License and disclaimer
+
+MIT for this code. The video decoder is AMI property and is not included; it is fetched from your own
+device at runtime.
+
+This project is not affiliated with ASUSTeK Computer Inc. or American Megatrends. It can control
+power, type into and flash firmware on real hardware; you are responsible for how you use it.
+Flashing firmware always carries a risk of making the card unusable.
