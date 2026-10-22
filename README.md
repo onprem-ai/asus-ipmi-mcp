@@ -67,6 +67,7 @@ For several machines, add one entry per card with different names.
 | `ASUS_IPMI_PASSWORD` | – (required) | Card password |
 | `ASUS_IPMI_ALLOW_POWER` | off | `1` enables `power` and `set_boot_once` |
 | `ASUS_IPMI_ALLOW_MEDIA` | off | `1` enables `media_configure_share`, `media_mount`, … |
+| `ASUS_IPMI_ALLOW_FIRMWARE` | off | `1` enables `firmware_prepare` and `firmware_flash` (card firmware update) |
 | `ASUS_IPMI_SCREENSHOT_MAX` | `1024` | Long side of returned screenshots (pixels) |
 
 ## Tools
@@ -85,6 +86,24 @@ For several machines, add one entry per card with different names.
 | `power` *(opt-in)* | `On`, `ForceOff`, `GracefulShutdown`, `ForceRestart` |
 | `set_boot_once` *(opt-in)* | Next boot from `Cd`, `Pxe`, `Usb`, `Hdd`, `BiosSetup` |
 | `media_configure_share`, `media_list_images`, `media_mount`, `media_unmount` *(opt-in)* | Attach an ISO from an NFS/CIFS share as virtual CD |
+| `firmware_check_update` | Card firmware vs. releases on the ASUS support page (version, date, SHA-256) |
+| `firmware_prepare` *(opt-in)* | Download + verify a card firmware (ASUS SHA-256, MD5, model match); `dry_run` lets the card verify it and cancels. Returns a `confirm_token` |
+| `firmware_flash` *(opt-in)* | Flash the prepared image (needs the `confirm_token`), keeps settings, waits for the card to return |
+
+### Card firmware update
+
+Two steps on purpose: `firmware_prepare` (safe, can be a dry run on the card) then `firmware_flash`
+with the returned token. What it protects against:
+
+- wrong file: checks ASUS's published SHA-256, the MD5 inside the zip, and that the image is for the
+  card's firmware model (e.g. `KOMMANDO`);
+- getting stuck: once in flash mode the card refuses all other logins until reset. On any error
+  before flashing starts, the server cancels flash mode itself and waits until the card accepts
+  logins again; only if that fails does it tell you to power-cycle;
+- interruption: the card has a single firmware slot. During `firmware_flash` (~10 min + reboot)
+  never cut power to the host.
+
+The update only touches the IPMI card, not the motherboard BIOS. The host keeps running.
 
 Typical agent loop: `screenshot` → decide → `click` / `type_text` / `press_keys` → `wait_for_screen_change`.
 

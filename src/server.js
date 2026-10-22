@@ -3,17 +3,20 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import crypto from 'node:crypto';
 import { Bmc } from './bmc.js';
 import { KvmSession } from './kvm.js';
 import { parseCombo, CHARS } from './keymap.js';
 import { crop, downscale, encode, diffRatio } from './image.js';
 import { systemInfo, sensors, power, setBootOnce, POWER_ACTIONS } from './redfish.js';
 import { mediaStatus, configureShare, listImages, startImage, stopImage } from './media.js';
+import { checkUpdate, prepareImage, flashImage, waitForBmc } from './firmware.js';
 
 const VERSION = '0.1.0';
 const env = process.env;
 const ALLOW_POWER = /^(1|true|yes)$/i.test(env.ASUS_IPMI_ALLOW_POWER || '');
 const ALLOW_MEDIA = /^(1|true|yes)$/i.test(env.ASUS_IPMI_ALLOW_MEDIA || '');
+const ALLOW_FIRMWARE = /^(1|true|yes)$/i.test(env.ASUS_IPMI_ALLOW_FIRMWARE || '');
 const MAX_SIDE = +(env.ASUS_IPMI_SCREENSHOT_MAX || 1024);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (msg) => process.stderr.write(`[asus-ipmi-mcp] ${msg}\n`);
@@ -280,6 +283,67 @@ if (ALLOW_MEDIA) {
   }, wrap(async ({ image, kind }) => text(await stopImage(bmc, { image, kind }))));
 }
 
+// ---------------- BMC firmware ----------------
+server.registerTool('firmware_check_update', {
+  title: 'Check for IPMI card firmware updates',
+  description: 'Compares the card firmware with the releases on the ASUS support page (version, date, SHA-256).',
+  inputSchema: {},
+}, wrap(async () => text(await checkUpdate(bmc))));
+
+if (ALLOW_FIRMWARE) {
+  const pending = new Map(); // confirmation token -> prepared image
+
+  server.registerTool('firmware_prepare', {
+    title: 'Download and verify card firmware (no flashing)',
+    description:
+      'Step 1 of 2. Downloads an IPMI card firmware (version from firmware_check_update, an https zip URL, or a local .zip/.ima path), ' +
+      'checks the ASUS SHA-256, the MD5 inside the zip and that the image is for this card model. ' +
+      'With dry_run=true it also uploads the image to the card and lets the card verify it, then cancels (card restarts ~90 s, firmware unchanged). ' +
+      'Returns a confirm_token for firmware_flash.',
+    inputSchema: {
+      source: z.string().describe('Version like "1.3.13", https URL of the ASUS zip, or local path to .zip/.ima'),
+      sha256: z.string().optional().describe('Expected SHA-256 of the zip (taken from the ASUS page automatically for versions)'),
+      dry_run: z.boolean().optional().describe('Upload + let the card verify, then cancel (default false)'),
+    },
+  }, wrap(async ({ source, sha256, dry_run = false }) => {
+    const prep = await prepareImage(bmc, { source, sha256 });
+    let dry = null;
+    if (dry_run) {
+      kvm.close();
+      const lines = [];
+      dry = await flashImage(bmc, { imagePath: prep.image_path, flash: false, onProgress: (l) => { lines.push(l); log(l); } });
+      dry.progress = lines;
+    }
+    const token = crypto.randomUUID().slice(0, 8);
+    pending.set(token, { ...prep, at: Date.now() });
+    return text({
+      ...prep, dry_run: dry, confirm_token: token,
+      next: `To flash, call firmware_flash with confirm_token "${token}" (valid 30 min). It takes ~10 min plus reboot; never cut power during it. The card has a single firmware slot.`,
+    });
+  }));
+
+  server.registerTool('firmware_flash', {
+    title: 'Flash prepared IPMI card firmware',
+    description:
+      'Step 2 of 2. Flashes the image prepared by firmware_prepare (needs its confirm_token). Keeps the card configuration by default. ' +
+      'KVM/web UI of the card are unavailable for ~15 min; the host keeps running. NEVER interrupt power during flashing.',
+    inputSchema: {
+      confirm_token: z.string(),
+      preserve_config: z.boolean().optional().describe('Keep IP, users, settings (default true)'),
+    },
+    annotations: { destructiveHint: true },
+  }, wrap(async ({ confirm_token, preserve_config = true }) => {
+    const prep = pending.get(confirm_token);
+    if (!prep || Date.now() - prep.at > 30 * 60000) throw new Error('unknown or expired confirm_token – run firmware_prepare again');
+    pending.delete(confirm_token);
+    kvm.close();
+    const lines = [];
+    const res = await flashImage(bmc, { imagePath: prep.image_path, flash: true, preserveConfig: preserve_config, onProgress: (l) => { lines.push(l); log(`flash: ${l}`); } });
+    const after = await waitForBmc(bmc).catch((e) => ({ error: e.message }));
+    return text({ ...res, before: prep.current, after, progress: lines.filter((l, i) => i < 3 || !/Flashing\.\.\./.test(l) || i % 10 === 0) });
+  }));
+}
+
 export async function main() {
   if (!env.ASUS_IPMI_HOST || !env.ASUS_IPMI_PASSWORD) {
     log('ASUS_IPMI_HOST and ASUS_IPMI_PASSWORD must be set (ASUS_IPMI_USER defaults to admin).');
@@ -287,7 +351,7 @@ export async function main() {
   }
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  log(`v${VERSION} ready for ${env.ASUS_IPMI_HOST} (power tools: ${ALLOW_POWER ? 'on' : 'off'}, media write tools: ${ALLOW_MEDIA ? 'on' : 'off'})`);
+  log(`v${VERSION} ready for ${env.ASUS_IPMI_HOST} (power: ${ALLOW_POWER ? 'on' : 'off'}, media write: ${ALLOW_MEDIA ? 'on' : 'off'}, firmware flash: ${ALLOW_FIRMWARE ? 'on' : 'off'})`);
   const shutdown = async () => { kvm.close(); await bmc.logout(); process.exit(0); };
   process.on('SIGINT', shutdown); process.on('SIGTERM', shutdown);
   process.stdin.on('close', shutdown);
