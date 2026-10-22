@@ -20,7 +20,7 @@ agent ──MCP(stdio)──> asus-ipmi-mcp ──HTTPS/WSS──> IPMI card (AS
 
 ## Install
 
-Requires Node.js ≥ 20 on the machine running the agent, and network access to the card's management port.
+Requires Node.js ≥ 22.19 on the machine running the agent, and network access to the card's management port.
 
 Run straight from GitHub (replace `<owner>`):
 
