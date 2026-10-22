@@ -1,0 +1,45 @@
+{
+  "name": "asus-ipmi-mcp",
+  "version": "0.1.0",
+  "description": "MCP server to control an ASUS IPMI Expansion Card (AMI MegaRAC / ASPEED AST2600): screen, mouse, keyboard, power, sensors, virtual media — no browser needed.",
+  "type": "module",
+  "bin": {
+    "asus-ipmi-mcp": "bin/asus-ipmi-mcp.js"
+  },
+  "main": "src/server.js",
+  "files": [
+    "bin",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node bin/asus-ipmi-mcp.js",
+    "smoke": "node test/smoke.js"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "ipmi",
+    "bmc",
+    "kvm",
+    "asus",
+    "ami",
+    "megarac",
+    "aspeed",
+    "ast2600",
+    "redfish"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "jpeg-js": "^0.4.4",
+    "pngjs": "^7.0.0",
+    "undici": "^8.12.3",
+    "ws": "^8.22.0",
+    "zod": "^4.6.7"
+  }
+}

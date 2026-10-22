@@ -1,0 +1,20 @@
+// Interactive check: press Enter on the lock screen, type the password, screenshot.
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+const t = new StdioClientTransport({ command: process.execPath, args: [path.join(root, 'bin/asus-ipmi-mcp.js')], env: { ...process.env }, stderr: 'inherit' });
+const c = new Client({ name: 'unlock', version: '0' });
+await c.connect(t);
+const call = async (name, args = {}) => { const r = await c.callTool({ name, arguments: args }); console.log(name, r.isError ? 'ERROR' : 'ok', r.content.filter(x => x.type === 'text').map(x => x.text.slice(0, 160)).join(' | ')); return r; };
+const save = (r, f) => { const im = r.content.find(x => x.type === 'image'); if (im) fs.writeFileSync(f, Buffer.from(im.data, 'base64')); };
+await call('press_keys', { keys: ['enter'] });
+await new Promise(r => setTimeout(r, 1500));
+save(await call('screenshot'), '/tmp/mcp-1.jpg');
+await call('type_text', { text: process.env.HOST_PASS + '\n' });
+save(await call('wait_for_screen_change', { timeout_seconds: 15 }), '/tmp/mcp-2.jpg');
+await new Promise(r => setTimeout(r, 3000));
+save(await call('screenshot'), '/tmp/mcp-3.jpg');
+await c.close();
