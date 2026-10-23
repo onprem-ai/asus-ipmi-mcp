@@ -34,11 +34,14 @@ async function freshScreen({ wake = true, timeoutMs = 6000 } = {}) {
   const before = kvm.frames;
   // First frames arrive right after connecting; otherwise ask for a refresh.
   if (await kvm.waitForFrame(before, 1500)) return true;
-  if (wake && (kvm.blank || !kvm.image)) {
+  try { kvm.send(11, 1); } catch { /* GET_FULL_SCREEN */ }
+  if (await kvm.waitForFrame(before, 1500)) return true;
+  // Still nothing: the display is probably asleep (DPMS). A tiny mouse move wakes it.
+  if (wake) {
     const p = kvm.lastMouse || { x: Math.floor((kvm.width || 1024) / 2), y: Math.floor((kvm.height || 768) / 2) };
     kvm.mouse(p.x + 1, p.y, 0); await sleep(80); kvm.mouse(p.x, p.y, 0);
+    try { kvm.send(11, 1); } catch { /* ignore */ }
   }
-  try { kvm.send(11, 1); } catch { /* GET_FULL_SCREEN */ }
   return kvm.waitForFrame(before, timeoutMs);
 }
 
@@ -168,7 +171,8 @@ server.registerTool('scroll', {
 // ---------------- keyboard ----------------
 server.registerTool('type_text', {
   title: 'Type text',
-  description: 'Types text on the host keyboard (US layout; use \\n for Enter, \\t for Tab). Non-ASCII characters are not supported.',
+  description: 'Types text on the host keyboard (US layout; use \\n for Enter, \\t for Tab). Non-ASCII characters are not supported. ' +
+    'Take a screenshot first: if the host locked its screen meanwhile, the text goes into the password field (a failed login).',
   inputSchema: {
     text: z.string().max(4000),
     delay_ms: z.number().int().min(10).max(1000).optional().describe('Delay between keys (default 30)'),
