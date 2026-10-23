@@ -40,7 +40,22 @@ WIFI running Rocky Linux, with no monitor attached.
 | **3. `type_text` the password: logged in** | **4. `press_keys` + `type_text` in a terminal: network repaired** |
 | ![GNOME desktop after logging in](docs/screenshots/03-desktop.png) | ![Terminal showing the host got its IP back](docs/screenshots/04-network-fixed.png) |
 
-The last one is a real repair: after the IPMI card was installed, the host's network cards got new
+It works before the OS too: firmware POST screen and the BIOS setup, navigated remotely with
+`press_keys` and `click`:
+
+| 5. POST screen (AMI firmware) | 6. BIOS setup, EZ Mode |
+|---|---|
+| ![AMI POST screen seen through the IPMI card](docs/screenshots/05-post-screen.png) | ![ASUS BIOS EZ Mode](docs/screenshots/06-bios-ez-mode.png) |
+| **7. Advanced Mode → Boot** | **8. Boot → CSM settings** |
+| ![BIOS boot menu](docs/screenshots/07-bios-boot-menu.png) | ![BIOS CSM submenu](docs/screenshots/08-bios-csm.png) |
+
+> [!NOTE]
+> On ASUS desktop/workstation boards the firmware shows its screens on the **primary** display only.
+> To see POST and BIOS through the card, set *Advanced → NB Configuration → Primary Video Device*
+> to **PCIE** and disable the onboard graphics. The card's video has only a legacy-compatible boot
+> path here, so the firmware turns on CSM by itself the first time; CSM and Secure Boot don't mix.
+
+The fourth screenshot is a real repair: after the IPMI card was installed, the host's network cards got new
 PCIe names and the old network profiles no longer matched, so the machine had no IP. The agent opened
 a terminal over the KVM, found the mismatch with `nmcli`, rebound the profiles to the cards' MAC
 addresses and brought the link up. No SSH was possible, because the machine had no network.
