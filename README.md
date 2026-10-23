@@ -54,8 +54,8 @@ It works before the OS too: firmware POST screen and the BIOS setup, navigated r
 | **7. Advanced Mode → Boot** | **8. Boot → CSM settings** |
 | ![BIOS boot menu](docs/screenshots/07-bios-boot-menu.png) | ![BIOS CSM submenu](docs/screenshots/08-bios-csm.png) |
 
-Screenshot 9: the agent changed three settings (boot mode and Secure Boot, to load an NVIDIA driver)
-and the BIOS confirms exactly those before saving:
+Screenshot 9: before saving, the BIOS lists exactly the changes the agent made, so they can be
+checked:
 
 ![BIOS save dialog listing the three changes](docs/screenshots/09-bios-save-changes.png)
 
