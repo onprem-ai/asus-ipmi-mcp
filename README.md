@@ -103,7 +103,7 @@ Requires Node.js ≥ 22.19 on the machine running the agent, and network access 
 Run straight from GitHub (from GitHub):
 
 ```bash
-npx -y github:tomas-polach/asus-ipmi-mcp
+npx -y github:onprem-ai/asus-ipmi-mcp
 ```
 
 ### Claude Code
@@ -111,7 +111,7 @@ npx -y github:tomas-polach/asus-ipmi-mcp
 ```bash
 claude mcp add asus-ipmi \
   -e ASUS_IPMI_HOST=192.168.0.144 -e ASUS_IPMI_USER=admin -e ASUS_IPMI_PASSWORD='…' \
-  -- npx -y github:tomas-polach/asus-ipmi-mcp
+  -- npx -y github:onprem-ai/asus-ipmi-mcp
 ```
 
 ### Generic MCP config (Claude Desktop, Cursor, …)
@@ -121,7 +121,7 @@ claude mcp add asus-ipmi \
   "mcpServers": {
     "asus-ipmi": {
       "command": "npx",
-      "args": ["-y", "github:tomas-polach/asus-ipmi-mcp"],
+      "args": ["-y", "github:onprem-ai/asus-ipmi-mcp"],
       "env": {
         "ASUS_IPMI_HOST": "192.168.0.144",
         "ASUS_IPMI_USER": "admin",

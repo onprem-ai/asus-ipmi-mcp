@@ -47,10 +47,10 @@
   "author": "Tomas Polach <tomas@polach.ch>",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tomas-polach/asus-ipmi-mcp.git"
+    "url": "git+https://github.com/onprem-ai/asus-ipmi-mcp.git"
   },
-  "homepage": "https://github.com/tomas-polach/asus-ipmi-mcp#readme",
+  "homepage": "https://github.com/onprem-ai/asus-ipmi-mcp#readme",
   "bugs": {
-    "url": "https://github.com/tomas-polach/asus-ipmi-mcp/issues"
+    "url": "https://github.com/onprem-ai/asus-ipmi-mcp/issues"
   }
 }

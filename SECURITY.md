@@ -11,5 +11,5 @@ a physical machine. Treat its configuration like physical access to that machine
 ## Reporting a vulnerability
 
 Please report security issues privately via
-[GitHub Security Advisories](https://github.com/tomas-polach/asus-ipmi-mcp/security/advisories/new)
+[GitHub Security Advisories](https://github.com/onprem-ai/asus-ipmi-mcp/security/advisories/new)
 instead of a public issue. Vulnerabilities in the IPMI card firmware itself should go to ASUS.
