@@ -1,5 +1,5 @@
 // Smoke test: start the server over stdio like an MCP client would, call read-only tools.
-// Usage: ASUS_IPMI_HOST=... ASUS_IPMI_PASSWORD=... node test/smoke.js [outdir]
+// Usage: node bin/asus-ipmi-mcp.js login <host>; then ASUS_IPMI_HOST=<host> node test/smoke.js [outdir]
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import fs from 'node:fs';

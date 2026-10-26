@@ -11,7 +11,8 @@ which tools worked, and anything odd. Reports on other AMI MegaRAC / ASPEED BMCs
 
 ```bash
 npm install
-ASUS_IPMI_HOST=… ASUS_IPMI_PASSWORD=… npm run smoke   # read-only + one screenshot
+node bin/asus-ipmi-mcp.js login <card address>     # once, asks for the password
+ASUS_IPMI_HOST=<card address> npm run smoke        # read-only + one screenshot
 ```
 
 - Node.js ≥ 22.19, ES modules, no build step.

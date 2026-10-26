@@ -108,10 +108,12 @@ npx -y github:onprem-ai/asus-ipmi-mcp
 
 ### Claude Code
 
+First log in once in a terminal (asks for the password, stores only session tokens,
+see below), then add the server **without** a password:
+
 ```bash
-claude mcp add asus-ipmi \
-  -e ASUS_IPMI_HOST=192.168.0.144 -e ASUS_IPMI_USER=admin -e ASUS_IPMI_PASSWORD='…' \
-  -- npx -y github:onprem-ai/asus-ipmi-mcp
+npx -y github:onprem-ai/asus-ipmi-mcp login <card address> --user admin
+claude mcp add asus-ipmi -e ASUS_IPMI_HOST=<card address> -- npx -y github:onprem-ai/asus-ipmi-mcp
 ```
 
 ### Generic MCP config (Claude Desktop, Cursor, …)
@@ -123,9 +125,7 @@ claude mcp add asus-ipmi \
       "command": "npx",
       "args": ["-y", "github:onprem-ai/asus-ipmi-mcp"],
       "env": {
-        "ASUS_IPMI_HOST": "192.168.0.144",
-        "ASUS_IPMI_USER": "admin",
-        "ASUS_IPMI_PASSWORD": "…",
+        "ASUS_IPMI_HOST": "<card address>",
         "ASUS_IPMI_ALLOW_POWER": "0",
         "ASUS_IPMI_ALLOW_MEDIA": "0"
       }
@@ -134,9 +134,10 @@ claude mcp add asus-ipmi \
 }
 ```
 
-For several machines, add one entry per card with different names.
+No password in the config: run `login` for the card first (below). For several machines,
+add one entry per card with different names, and run `login` once per card.
 
-### Without a password in the config (recommended)
+### Login: no password in the config
 
 ```bash
 npx -y github:onprem-ai/asus-ipmi-mcp login <card address> --user admin   # asks for the password, hidden
@@ -156,7 +157,7 @@ sees it. The sessions expire on the card after inactivity; then run `login` agai
 |---|---|---|
 | `ASUS_IPMI_HOST` | – (required) | Card IP / hostname |
 | `ASUS_IPMI_USER` | `admin` | Card user (needs KVM privilege) |
-| `ASUS_IPMI_PASSWORD` | – | Card password. Better: leave it unset and use `asus-ipmi-mcp login` (below) |
+| `ASUS_IPMI_PASSWORD` | – | Only for unattended use (CI, scripts). Leave it unset and use `login` instead |
 | `ASUS_IPMI_SESSION_FILE` | `~/.local/state/asus-ipmi-mcp/<host>.json` | Where `login` stores the session tokens |
 | `ASUS_IPMI_ALLOW_POWER` | off | `1` enables `power` and `set_boot_once` |
 | `ASUS_IPMI_ALLOW_MEDIA` | off | `1` enables `media_configure_share`, `media_mount`, … |
@@ -236,7 +237,8 @@ network, and review what the agent does — it's physical access over the networ
 
 ```bash
 npm install
-ASUS_IPMI_HOST=… ASUS_IPMI_PASSWORD=… npm run smoke     # read-only tools + one screenshot
+node bin/asus-ipmi-mcp.js login <card address>          # once
+ASUS_IPMI_HOST=<card address> npm run smoke             # read-only tools + one screenshot
 ```
 
 Protocol notes are in the source headers (`src/kvm.js`, `src/media.js`).
