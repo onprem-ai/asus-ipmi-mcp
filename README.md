@@ -17,6 +17,19 @@ agent ──MCP (stdio)──> asus-ipmi-mcp ──HTTPS/WebSocket──> IPMI c
 > compatible hardware. It talks to the card through the same interfaces its own web console uses,
 > learned by observing them. Use at your own risk; for official support contact ASUS.
 
+> [!TIP]
+> **Safe setup: the password never goes into the MCP config.** Run `login` once in a terminal.
+> It asks for the card password at a hidden prompt and stores **only session tokens** (mode 600).
+> Then configure the server with just the card address. The agent, the config, the environment,
+> your shell history and the logs never see the password.
+>
+> ```bash
+> npx -y github:onprem-ai/asus-ipmi-mcp login <card address> --user admin
+> claude mcp add asus-ipmi -e ASUS_IPMI_HOST=<card address> -- npx -y github:onprem-ai/asus-ipmi-mcp
+> ```
+>
+> Details: [Login: no password in the config](#login-no-password-in-the-config).
+
 ## What it's good for
 
 - **Install or reinstall an OS without anyone at the machine:** watch the installer, click through it,
@@ -100,16 +113,17 @@ Reports from other boards and firmware versions are very welcome. Please open an
 
 Requires Node.js ≥ 22.19 on the machine running the agent, and network access to the card's management port.
 
-Run straight from GitHub (from GitHub):
+Run straight from GitHub:
 
 ```bash
 npx -y github:onprem-ai/asus-ipmi-mcp
 ```
 
+Setup is always two steps: **1. `login` once in a terminal** (asks for the password, stores only
+session tokens, [see below](#login-no-password-in-the-config)), **2. add the server without a password**.
+
 ### Claude Code
 
-First log in once in a terminal (asks for the password, stores only session tokens,
-see below), then add the server **without** a password:
 
 ```bash
 npx -y github:onprem-ai/asus-ipmi-mcp login <card address> --user admin
@@ -138,6 +152,8 @@ No password in the config: run `login` for the card first (below). For several m
 add one entry per card with different names, and run `login` once per card.
 
 ### Login: no password in the config
+
+This is the recommended and safe way to use the server.
 
 ```bash
 npx -y github:onprem-ai/asus-ipmi-mcp login <card address> --user admin   # asks for the password, hidden
@@ -229,9 +245,15 @@ Typical agent loop: `screenshot` → decide → `click` / `type_text` / `press_k
 
 ## Safety
 
-This server can type passwords, power-cycle machines, boot installers and flash firmware. Keep
-`ASUS_IPMI_ALLOW_POWER`, `ASUS_IPMI_ALLOW_MEDIA` and `ASUS_IPMI_ALLOW_FIRMWARE` off unless needed, use a dedicated card user, put the card on a management
-network, and review what the agent does — it's physical access over the network.
+This server can type passwords, power-cycle machines, boot installers and flash firmware. It's
+physical access over the network.
+
+- **Use `login`, not `ASUS_IPMI_PASSWORD`.** The card password stays out of the MCP config, the
+  environment and the agent's reach; only expiring session tokens are stored (mode 600). `logout`
+  ends the sessions right away.
+- Keep `ASUS_IPMI_ALLOW_POWER`, `ASUS_IPMI_ALLOW_MEDIA` and `ASUS_IPMI_ALLOW_FIRMWARE` off unless needed.
+- Use a dedicated card user and put the card on a management network.
+- Review what the agent does.
 
 ## Development
 
