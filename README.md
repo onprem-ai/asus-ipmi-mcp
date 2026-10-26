@@ -136,13 +136,28 @@ claude mcp add asus-ipmi \
 
 For several machines, add one entry per card with different names.
 
+### Without a password in the config (recommended)
+
+```bash
+npx -y github:onprem-ai/asus-ipmi-mcp login <card address> --user admin   # asks for the password, hidden
+npx -y github:onprem-ai/asus-ipmi-mcp logout <card address>               # ends the sessions on the card
+```
+
+`login` asks for the password once at a hidden terminal prompt, opens a web and a Redfish
+session on the card, and stores **only the session tokens** in a file readable by you
+alone (mode 600). Then configure the MCP server with `ASUS_IPMI_HOST` and **no**
+`ASUS_IPMI_PASSWORD`: it runs on the tokens. The password never appears in the MCP
+config, the environment, the command line, shell history or logs, and the agent never
+sees it. The sessions expire on the card after inactivity; then run `login` again.
+
 ### Configuration
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `ASUS_IPMI_HOST` | – (required) | Card IP / hostname |
 | `ASUS_IPMI_USER` | `admin` | Card user (needs KVM privilege) |
-| `ASUS_IPMI_PASSWORD` | – (required) | Card password |
+| `ASUS_IPMI_PASSWORD` | – | Card password. Better: leave it unset and use `asus-ipmi-mcp login` (below) |
+| `ASUS_IPMI_SESSION_FILE` | `~/.local/state/asus-ipmi-mcp/<host>.json` | Where `login` stores the session tokens |
 | `ASUS_IPMI_ALLOW_POWER` | off | `1` enables `power` and `set_boot_once` |
 | `ASUS_IPMI_ALLOW_MEDIA` | off | `1` enables `media_configure_share`, `media_mount`, … |
 | `ASUS_IPMI_ALLOW_FIRMWARE` | off | `1` enables `firmware_prepare` and `firmware_flash` (card firmware update) |

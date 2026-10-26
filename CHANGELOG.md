@@ -10,4 +10,6 @@ First public version.
   `firmware_check_update`
 - Opt-in tools: `power`, `set_boot_once` (`ASUS_IPMI_ALLOW_POWER`), virtual media
   (`ASUS_IPMI_ALLOW_MEDIA`), `firmware_prepare` / `firmware_flash` (`ASUS_IPMI_ALLOW_FIRMWARE`)
+- `login` / `logout` commands: password asked once at a hidden prompt, only session tokens
+  stored (mode 600); the server runs on them without `ASUS_IPMI_PASSWORD`
 - Tested on ASUS IPMI Expansion Card-SI, BMC firmware 1.3.13, ProArt X870E-CREATOR WIFI

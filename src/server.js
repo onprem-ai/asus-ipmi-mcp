@@ -11,6 +11,7 @@ import { crop, downscale, encode, diffRatio } from './image.js';
 import { systemInfo, sensors, power, setBootOnce, POWER_ACTIONS } from './redfish.js';
 import { mediaStatus, configureShare, listImages, startImage, stopImage } from './media.js';
 import { checkUpdate, prepareImage, flashImage, waitForBmc } from './firmware.js';
+import { loadSession } from './session.js';
 
 const VERSION = '0.1.0';
 const env = process.env;
@@ -21,8 +22,8 @@ const MAX_SIDE = +(env.ASUS_IPMI_SCREENSHOT_MAX || 1024);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (msg) => process.stderr.write(`[asus-ipmi-mcp] ${msg}\n`);
 
-const bmc = new Bmc({ host: env.ASUS_IPMI_HOST, user: env.ASUS_IPMI_USER || 'admin', password: env.ASUS_IPMI_PASSWORD });
-const kvm = new KvmSession(bmc, { log });
+let bmc = null;
+let kvm = null;
 
 const text = (obj) => ({ content: [{ type: 'text', text: typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2) }] });
 const fail = (e) => ({ isError: true, content: [{ type: 'text', text: `Error: ${e.message || e}` }] });
@@ -349,13 +350,21 @@ if (ALLOW_FIRMWARE) {
 }
 
 export async function main() {
-  if (!env.ASUS_IPMI_HOST || !env.ASUS_IPMI_PASSWORD) {
-    log('ASUS_IPMI_HOST and ASUS_IPMI_PASSWORD must be set (ASUS_IPMI_USER defaults to admin).');
+  if (!env.ASUS_IPMI_HOST) {
+    log('ASUS_IPMI_HOST must be set.');
     process.exit(1);
   }
+  // Prefer stored session tokens (from `asus-ipmi-mcp login`) over a password in the environment.
+  const session = env.ASUS_IPMI_PASSWORD ? null : loadSession(env.ASUS_IPMI_HOST);
+  if (!env.ASUS_IPMI_PASSWORD && !session) {
+    log(`No credentials. Run once in a terminal: asus-ipmi-mcp login ${env.ASUS_IPMI_HOST} (asks for the password, stores only session tokens). Or set ASUS_IPMI_PASSWORD.`);
+    process.exit(1);
+  }
+  bmc = new Bmc({ host: env.ASUS_IPMI_HOST, user: env.ASUS_IPMI_USER || 'admin', password: env.ASUS_IPMI_PASSWORD, session });
+  kvm = new KvmSession(bmc, { log });
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  log(`v${VERSION} ready for ${env.ASUS_IPMI_HOST} (power: ${ALLOW_POWER ? 'on' : 'off'}, media write: ${ALLOW_MEDIA ? 'on' : 'off'}, firmware flash: ${ALLOW_FIRMWARE ? 'on' : 'off'})`);
+  log(`v${VERSION} ready for ${env.ASUS_IPMI_HOST}, auth: ${session ? 'session tokens' : 'password'} (power: ${ALLOW_POWER ? 'on' : 'off'}, media write: ${ALLOW_MEDIA ? 'on' : 'off'}, firmware flash: ${ALLOW_FIRMWARE ? 'on' : 'off'})`);
   const shutdown = async () => { kvm.close(); await bmc.logout(); process.exit(0); };
   process.on('SIGINT', shutdown); process.on('SIGTERM', shutdown);
   process.stdin.on('close', shutdown);
