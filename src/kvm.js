@@ -12,6 +12,7 @@
 import { EventEmitter } from 'node:events';
 import WebSocket from 'ws';
 import { AstDecoder, loadDecoderSource } from './decoder.js';
+import { normalizeVersion } from './firmware.js';
 
 export const CMD = {
   SEND_HID_PACKET: 1, RESUME_REDIRECTION: 6, STOP_SESSION_IMMEDIATE: 8, PAINT_BLANK_SCREEN: 9,
@@ -23,6 +24,34 @@ export const CMD = {
 const NAMES = Object.fromEntries(Object.entries(CMD).map(([k, v]) => [v, k]));
 const VALIDATE_RESULT = { 0: 'invalid session', 1: 'valid', 2: 'insufficient privilege (KVM not allowed for this user)', 3: 'invalid session info', 8: 'session unregistered' };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// KVM_SHARING(32) / SET_NEXT_MASTER(50): status low byte = privilege step, high byte = answer
+// (constants from the card's viewer.min.js).
+export const PRIV = { REQ_CANCEL: 0, REQ_MASTER: 1, WAIT_SLAVE: 2, REQ_TIMEOUT_TO_MASTER: 3, RESPONSE_TO_SLAVE: 4, SWITCH_MASTER: 6 };
+export const REQ = { ALLOWED: 0, DENIED: 1, PARTIAL: 2, TIMEOUT: 3, PROGRESS: 5, BLOCKED_PARTIAL: 6, MASTER_RECONN: 7, BLOCKED_DENIED: 8 };
+const VIEWER_HOLDS = "The card's web KVM viewer (H5Viewer) is open and holds control";
+const RESPONSE_TEXT = {
+  [REQ.DENIED]: `${VIEWER_HOLDS} and denied the request. Close it (or accept 'Permission Requested' there) and retry.`,
+  [REQ.PARTIAL]: `${VIEWER_HOLDS} and granted view-only access; keyboard and mouse would not work. Close the viewer and retry.`,
+  [REQ.TIMEOUT]: `${VIEWER_HOLDS}; the request timed out there. Close it and retry.`,
+  [REQ.BLOCKED_PARTIAL]: `${VIEWER_HOLDS} and blocks requests (view-only). Close it and retry.`,
+  [REQ.BLOCKED_DENIED]: `${VIEWER_HOLDS} and blocks all requests. Close it and retry.`,
+};
+// "Invalid WebSocket frame: RSV1 must be clear": seen on firmware 1.1.35 (192.168.0.20, 2026-10-27).
+// The card answers the upgrade with 101, then its web server (lighttpd) writes a plain
+// "HTTP/1.1 200 OK ..." response INTO the websocket stream: the byte 'H' (0x48) parses as a frame
+// with RSV1 set and opcode 8. So the KVM backend behind the web server is not answering; this is
+// not a compression problem (the card sends the same with and without a deflate offer).
+const RSV1_HINT = "The card's KVM service is not answering (its web server replied with plain HTTP inside the KVM websocket). " +
+  'This happens when the KVM service on the card is stuck, e.g. after a browser viewer session. ' +
+  'Restart the card (web UI Maintenance → BMC Reset, or the kvm_reset tool with ASUS_IPMI_ALLOW_BMC_RESET=1); the host keeps running.';
+
+/** Turn low-level websocket errors into actionable messages. */
+export function explainWsError(msg) {
+  if (/RSV1/i.test(msg)) return `KVM websocket error: ${msg}. ${RSV1_HINT}`;
+  if (/Unexpected server response: 401|403/.test(msg)) return `KVM websocket refused (${msg}): the web session is not valid`;
+  return `KVM websocket error: ${msg}`;
+}
 
 function header(type, size, status, payload) {
   const b = Buffer.alloc(8 + size);
@@ -58,6 +87,13 @@ export class KvmSession extends EventEmitter {
     this.mouseMode = null;
     this.seq = 0;
     this.otherClients = [];
+    this.control = { state: 'unknown', detail: null, other: null, at: null };
+    this.lastError = null;
+    this.closeReason = null;
+  }
+
+  setControl(state, detail, other = this.control.other) {
+    this.control = { state, detail, other, at: new Date().toISOString() };
   }
 
   get width() { return this.decoder?.width || 0; }
@@ -75,41 +111,79 @@ export class KvmSession extends EventEmitter {
   async _connect() {
     this.close();
     this.reset();
+    try {
+      await this._connectInner();
+    } catch (e) {
+      this.lastError = { message: e.message, at: new Date().toISOString() };
+      this.close();
+      throw e;
+    }
+  }
+
+  async _connectInner() {
     await this.bmc.login();
     const cfg = await this.bmc.api('GET', '/api/settings/media/h5viewercfg');
     if (cfg.kvm_service_status === 0) throw new Error('KVM service is disabled on the BMC');
     this.session = { client_ip: cfg.client_ip, session: cfg.session, token: cfg.token, server_ip: cfg.server_ip };
     if (!this.decoder) {
       let tag = 'unknown';
-      try { const m = await this.bmc.redfish('GET', '/redfish/v1/Managers/Self'); tag = m.FirmwareVersion || tag; } catch { /* ignore */ }
+      try { const m = await this.bmc.redfish('GET', '/redfish/v1/Managers/Self'); tag = normalizeVersion(m.FirmwareVersion) || tag; } catch { /* ignore */ }
       this.decoder = new AstDecoder(await loadDecoderSource(this.bmc, tag));
     }
 
-    const ws = new WebSocket(`wss://${this.bmc.host}/kvm`, ['binary', 'base64'], {
-      rejectUnauthorized: false, origin: `https://${this.bmc.host}`, headers: { cookie: this.bmc.cookie },
+    // perMessageDeflate off: the card never negotiates compression, so don't offer it.
+    const wsUrl = this.bmc.origin.replace(/^http/, 'ws') + '/kvm';
+    const ws = new WebSocket(wsUrl, ['binary', 'base64'], {
+      rejectUnauthorized: false, origin: this.bmc.origin, headers: { cookie: this.bmc.cookie }, perMessageDeflate: false,
     });
     this.ws = ws;
-    ws.on('message', (data, isBinary) => {
-      const chunk = isBinary ? Buffer.from(data) : Buffer.from(data.toString(), 'base64');
-      this.buf = this.buf.length ? Buffer.concat([this.buf, chunk]) : chunk;
-      try { this.parse(); } catch (e) { this.log(`parse error: ${e.message}`); }
-    });
-    ws.on('close', () => {
-      this.connected = false; this.validated = false;
-      this.log('KVM websocket closed');
-      this.emit('close');
-    });
-    ws.on('error', (e) => this.log(`KVM websocket error: ${e.message}`));
-    await new Promise((res, rej) => { ws.once('open', res); ws.once('error', rej); });
-    this.connected = true;
 
+    // Everything until validation is one promise: any websocket error or close rejects it with
+    // the cause instead of waiting for the timeout.
     await new Promise((res, rej) => {
-      const t = setTimeout(() => rej(new Error('KVM session not validated within 15 s')), 15000);
-      this.once('validated', (code) => {
-        clearTimeout(t);
-        if (code === 1) res(); else rej(new Error(`KVM session rejected: ${VALIDATE_RESULT[code] || code}`));
+      let done = false, timer = null;
+      const finish = (err) => {
+        if (done) return; done = true; clearTimeout(timer);
+        this.off('validated', onValidated); this.off('sharing', onSharing);
+        err ? rej(err) : res();
+      };
+      const arm = (ms, why) => { clearTimeout(timer); timer = setTimeout(() => finish(new Error(why())), ms); };
+      const onValidated = (code) => {
+        if (code === 1) finish();
+        else finish(new Error(`KVM session rejected: ${VALIDATE_RESULT[code] || code}`));
+      };
+      const onSharing = ({ step, answer }) => {
+        if (step === PRIV.WAIT_SLAVE) {
+          // The viewer shows "Permission Requested" and auto-answers after ~30 s.
+          arm(45000, () => `${VIEWER_HOLDS}; no answer to the control request within 45 s. Close it (or accept 'Permission Requested' there) and retry.`);
+        } else if (step === PRIV.RESPONSE_TO_SLAVE && answer !== REQ.ALLOWED && RESPONSE_TEXT[answer]) {
+          finish(new Error(RESPONSE_TEXT[answer]));
+        }
+      };
+      this.on('validated', onValidated); this.on('sharing', onSharing);
+      arm(15000, () => (this.connected ? 'KVM session not validated within 15 s (the card sent no answer)' : 'KVM websocket did not open within 15 s'));
+
+      ws.on('open', () => { if (this.ws === ws) this.connected = true; });
+      ws.on('message', (data, isBinary) => {
+        const chunk = isBinary ? Buffer.from(data) : Buffer.from(data.toString(), 'base64');
+        this.buf = this.buf.length ? Buffer.concat([this.buf, chunk]) : chunk;
+        try { this.parse(); } catch (e) { this.log(`parse error: ${e.message}`); }
+      });
+      ws.on('error', (e) => {
+        const msg = explainWsError(e.message);
+        this.log(msg);
+        this.lastError = { message: msg, at: new Date().toISOString() };
+        finish(new Error(msg));
+      });
+      ws.on('close', (code, reason) => {
+        const wasValidated = this.validated;
+        if (this.ws === ws || this.ws === null) { this.connected = false; this.validated = false; }
+        this.log(`KVM websocket closed (${code}${reason?.length ? ` ${reason}` : ''})`);
+        this.emit('close');
+        if (!wasValidated) finish(new Error(this.closeReason || `KVM websocket closed by the card before the session was validated (code ${code}${reason?.length ? `, ${reason}` : ''})`));
       });
     });
+    this.setControl('ours', 'this client holds KVM control');
     this.log('KVM session validated');
   }
 
@@ -142,7 +216,7 @@ export class KvmSession extends EventEmitter {
         break;
       case CMD.ACTIVE_CLIENTS: {
         this.otherClients = [];
-        for (let o = 0; o + 134 <= p.length; o += 134) {
+        for (let o = 0; o + 134 <= p.length; o += 134) { // name[64] ip[65] + 5 bytes
           const name = p.subarray(o, o + 64).toString('latin1').replace(/\0.*$/s, '');
           const ip = p.subarray(o + 64, o + 129).toString('latin1').replace(/\0.*$/s, '');
           this.otherClients.push({ name, ip });
@@ -155,15 +229,35 @@ export class KvmSession extends EventEmitter {
       case CMD.PAINT_BLANK_SCREEN: this.blank = true; this.lastBlankAt = Date.now(); this.emit('blank'); break;
       case CMD.STOP_SESSION_IMMEDIATE:
       case CMD.MAX_SESSION_CLOSE:
-        this.log(`BMC stopped the KVM session (${NAMES[type]}, status ${status})`);
+        this.closeReason = type === CMD.MAX_SESSION_CLOSE
+          ? 'the card refused the KVM session: maximum number of KVM sessions reached (close other viewers or wait for them to time out)'
+          : `the card stopped the KVM session (${NAMES[type]}, status ${status})`;
+        this.log(this.closeReason);
+        this.setControl('none', this.closeReason);
+        this.lastError = { message: this.closeReason, at: new Date().toISOString() };
         this.close();
         break;
       case CMD.KVM_SHARING:
-        this.log(`another client requests KVM control (status ${status & 255})`);
-        break;
+      case CMD.SET_NEXT_MASTER: this.onSharing(type, status, p); break;
       case CMD.VIDEO_PACKETS: this.onVideoPacket(p); break;
       default: break;
     }
+  }
+
+  onSharing(type, status, p) {
+    const step = status & 255, answer = status >> 8;
+    const raw = p.toString('latin1');
+    const other = raw.length >= 64 ? { name: raw.slice(0, 64).replace(/\0.*$/s, ''), ip: raw.slice(64, 129).replace(/\0.*$/s, '') } : this.control.other;
+    const who = other?.ip ? ` (${other.name || '?'} from ${other.ip})` : '';
+    if (step === PRIV.WAIT_SLAVE) this.setControl('waiting', `another client holds KVM control${who}; waiting for its permission`, other);
+    else if (step === PRIV.REQ_MASTER) this.setControl(this.validated ? 'ours' : this.control.state, `another client${who} requests KVM control from us`, other);
+    else if (step === PRIV.RESPONSE_TO_SLAVE) {
+      if (answer === REQ.ALLOWED) this.setControl('ours', `control granted by the other client${who}`, other);
+      else if (answer === REQ.PARTIAL || answer === REQ.BLOCKED_PARTIAL) this.setControl('view_only', `the other client${who} granted view-only access`, other);
+      else this.setControl('denied', `the other client${who} denied control (answer ${answer})`, other);
+    } else if (step === PRIV.SWITCH_MASTER) this.setControl('switching', `KVM control is switching${who}`, other);
+    this.log(`KVM sharing: ${NAMES[type]} step ${step} answer ${answer}${who}`);
+    this.emit('sharing', { step, answer, other });
   }
 
   sendValidate() {
