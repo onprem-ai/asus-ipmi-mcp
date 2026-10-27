@@ -1,10 +1,10 @@
 // Command-line mode: call tools without an MCP client (CI, scripts, agents without MCP support).
 //
-//   asus-ipmi-mcp tools                                   list tools (with the current ASUS_IPMI_ALLOW_* flags)
+//   asus-ipmi-mcp tools                                   list tools
 //   asus-ipmi-mcp call <host> <tool> ['<json args>'] [--out file]
 //   asus-ipmi-mcp run  <host> <steps.json|-> [--out-dir dir] [--keep-going]
 //
-// Same credentials (login tokens or ASUS_IPMI_PASSWORD) and opt-in flags as the server.
+// Same credentials (login tokens or ASUS_IPMI_PASSWORD) as the server.
 // `run` executes all steps in ONE process, so the KVM connection, screen_ids and the
 // firmware confirm_token carry over. Step args may reference earlier results:
 //   "$prev.confirm_token"   field of the previous step's JSON result
@@ -101,7 +101,7 @@ export async function runSteps({ host, steps, outDir, out, keepGoing = false, wr
       try {
         if (!s || typeof s.tool !== 'string') throw new Error('step needs {"tool": "<name>", "args": {...}}');
         const tool = byName.get(s.tool);
-        if (!tool) throw new Error(`unknown tool "${s.tool}"${['power', 'set_boot_once', 'firmware_prepare', 'firmware_flash', 'kvm_reset'].includes(s.tool) || s.tool.startsWith('media_') ? ' (opt-in: set the matching ASUS_IPMI_ALLOW_* variable)' : ''}`);
+        if (!tool) throw new Error(`unknown tool "${s.tool}" (list them with: asus-ipmi-mcp tools)`);
         const args = await validateArgs(tool, resolveRefs(s.args || {}, results));
         const res = await tool.handler(args);
         const m = materialize(res, { out: steps.length === 1 ? out : null, outDir, prefix: `step${String(stepNo).padStart(2, '0')}-${s.tool}` });

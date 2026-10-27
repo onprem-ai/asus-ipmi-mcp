@@ -4,6 +4,10 @@
 
 Fixes and features from a fleet session (four cards, firmware 1.1.35 → 1.3.13).
 
+- **Removed the `ASUS_IPMI_ALLOW_POWER` / `_MEDIA` / `_FIRMWARE` flags.** All tools (power, boot
+  override, virtual media, firmware, `bmc_reset`) are always available; the login session is the
+  access control. Existing configs that set these variables keep working (they are ignored).
+
 - **Fix: card restarts in token mode were misreported.** A firmware dry run said "back after 20 s"
   while the session was already dead, and a flash said "did not come back" although the card was up.
   Restarts are now followed with an unauthenticated `GET /redfish/v1` (down, then up). In token
@@ -17,7 +21,9 @@ Fixes and features from a fleet session (four cards, firmware 1.1.35 → 1.3.13)
   into the websocket (`H` = `0x48` parses as RSV1 + opcode 8), so it is not about compression. The
   error now says to restart the card. WebSocket compression is no longer offered.
 - `kvm_status` reports who holds control and the last connect error, even when connecting fails.
-- New opt-in tool `kvm_reset` (`ASUS_IPMI_ALLOW_BMC_RESET`): restarts the card and waits for it.
+- New tool `bmc_reset`: restarts the card with the stored web
+  session (no password) and waits for it. Refused during a firmware flash. The same restart path is
+  used to cancel flash mode; a dropped connection counts as sent.
 - `type_text` / `press_keys`: `then_screenshot` returns the settled screen; `expect_screen`
   (a `screen_id` from `screenshot`) refuses input if the screen changed meanwhile.
 - Command line without an MCP client: `call`, `run` (many steps in one session, `$prev` references),

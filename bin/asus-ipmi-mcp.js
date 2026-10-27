@@ -22,7 +22,7 @@ if (cmd === 'login' || cmd === 'logout') {
   asus-ipmi-mcp                                    MCP server on stdio (ASUS_IPMI_HOST=<host>)
   asus-ipmi-mcp login <host> [--user <user>]       store session tokens (asks for the password once)
   asus-ipmi-mcp logout <host>                      end the sessions, delete the token file
-  asus-ipmi-mcp tools                              list tools (honours ASUS_IPMI_ALLOW_*)
+  asus-ipmi-mcp tools                              list tools
   asus-ipmi-mcp call <host> <tool> ['<json>'] [--out <file>]
   asus-ipmi-mcp run <host> <steps.json|-> [--out-dir <dir>] [--keep-going]
 `);

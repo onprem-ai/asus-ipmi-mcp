@@ -4,7 +4,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const t = new StdioClientTransport({ command: process.execPath, args: [path.join(root, 'bin/asus-ipmi-mcp.js')], env: { ...process.env, ASUS_IPMI_ALLOW_FIRMWARE: '1' }, stderr: 'inherit' });
+const t = new StdioClientTransport({ command: process.execPath, args: [path.join(root, 'bin/asus-ipmi-mcp.js')], env: { ...process.env }, stderr: 'inherit' });
 const c = new Client({ name: 'fw', version: '0' });
 await c.connect(t);
 console.log('tools:', (await c.listTools()).tools.map((x) => x.name).filter((n) => n.startsWith('firmware')).join(', '));

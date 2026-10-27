@@ -14,16 +14,10 @@ import { loadSession, sessionFile } from './session.js';
 
 export const VERSION = '0.2.0';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const on = (v) => /^(1|true|yes)$/i.test(v || '');
 
+/** Settings from the environment. All tools are always available: the login session is the access control. */
 export function flagsFromEnv(env = process.env) {
-  return {
-    power: on(env.ASUS_IPMI_ALLOW_POWER),
-    media: on(env.ASUS_IPMI_ALLOW_MEDIA),
-    firmware: on(env.ASUS_IPMI_ALLOW_FIRMWARE),
-    bmcReset: on(env.ASUS_IPMI_ALLOW_BMC_RESET),
-    maxSide: +(env.ASUS_IPMI_SCREENSHOT_MAX || 1024),
-  };
+  return { maxSide: +(env.ASUS_IPMI_SCREENSHOT_MAX || 1024) };
 }
 
 /** Bmc for a host from the environment: password, or tokens from `login` (re-read when they change). */
@@ -71,7 +65,11 @@ export function createTools({ bmc, flags = flagsFromEnv(), log = () => {} }) {
     while (shots.size > SHOTS_KEPT) shots.delete(shots.keys().next().value);
     return id;
   }
-  const changedFrom = (a, b) => (!a || !b || a.w !== b.w || a.h !== b.h ? 1 : diffRatio(a.data, b.data));
+  // Per-channel tolerance against video-compression noise (see diffRatio). Measured on a still
+  // GNOME lock screen (192.168.0.20): a full refresh changed 70% of pixels exactly, 1.2% beyond
+  // 8 levels, 0.14% beyond 24. Real changes (text, dialogs, a lock screen) move pixels far more.
+  const NOISE = 24;
+  const changedFrom = (a, b, tol = NOISE) => (!a || !b || a.w !== b.w || a.h !== b.h ? 1 : diffRatio(a.data, b.data, tol));
 
   /** Make sure we have a session and a current picture; nudge the mouse to wake a blanked display. */
   async function freshScreen({ wake = true, timeoutMs = 6000 } = {}) {
@@ -341,8 +339,8 @@ export function createTools({ bmc, flags = flagsFromEnv(), log = () => {} }) {
     inputSchema: { include_absent: z.boolean().optional() },
   }, async ({ include_absent }) => text(await sensors(bmc, { includeAbsent: include_absent })));
 
-  // ---------------- power (opt-in) ----------------
-  if (flags.power) {
+  // ---------------- power ----------------
+  {
     add('power', {
       title: 'Host power control',
       description: `Power the host on/off/restart via the BMC. Actions: ${POWER_ACTIONS.join(', ')}. ForceOff/ForceRestart cut power immediately (data loss possible).`,
@@ -367,7 +365,7 @@ export function createTools({ bmc, flags = flagsFromEnv(), log = () => {} }) {
     inputSchema: {},
   }, async () => text(await mediaStatus(bmc)));
 
-  if (flags.media) {
+  {
     add('media_configure_share', {
       title: 'Configure virtual-media share',
       description: 'Sets the NFS/CIFS share the BMC reads ISO/IMG files from and enables remote media. Changes BMC settings.',
@@ -410,7 +408,7 @@ export function createTools({ bmc, flags = flagsFromEnv(), log = () => {} }) {
     ? ' The card restart ends the stored login session: run "asus-ipmi-mcp login <host>" again afterwards (the server picks up the new tokens by itself).'
     : '';
 
-  if (flags.firmware) {
+  {
     const pending = new Map(); // confirmation token -> prepared image
 
     add('firmware_prepare', {
@@ -466,12 +464,13 @@ export function createTools({ bmc, flags = flagsFromEnv(), log = () => {} }) {
     });
   }
 
-  if (flags.bmcReset) {
-    add('kvm_reset', {
-      title: 'Restart the IPMI card (fixes a stuck KVM)',
+  {
+    add('bmc_reset', {
+      title: 'Restart the IPMI card',
       description:
-        "Restarts the IPMI card itself (same as the card's Maintenance → BMC Reset), e.g. when the KVM keeps failing with an RSV1 / websocket error. " +
-        'The host keeps running; the card is unreachable for ~1–3 min.' + restartNote,
+        'Restarts the IPMI card itself (POST /api/maintenance/reset, the card\'s own restart), e.g. when the KVM fails with "RSV1 must be clear" / "KVM service is not answering". ' +
+        'The host keeps running (no power change). ALL card sessions end, including the browser viewer and other users; virtual-media mounts drop. ' +
+        'The card is unreachable for ~1 min. Refused while a firmware flash is in progress.' + restartNote,
       inputSchema: {},
       annotations: { destructiveHint: true },
     }, async () => {
@@ -483,5 +482,13 @@ export function createTools({ bmc, flags = flagsFromEnv(), log = () => {} }) {
     });
   }
 
-  return { tools, bmc, kvm, close: async () => { kvm.close(); await bmc.logout(); } };
+  // Token mode: the card's Redfish SessionTimeout is 30 s (web session: 30 min), so a stored
+  // Redfish token dies between agent turns. Keep it alive while this process runs.
+  let keepAlive = null;
+  if (bmc.tokenMode && bmc.redfishToken && flags.redfishKeepAliveMs !== 0) {
+    keepAlive = setInterval(() => { bmc.redfish('GET', '/redfish/v1/SessionService').catch(() => {}); }, flags.redfishKeepAliveMs || 15000);
+    keepAlive.unref?.();
+  }
+
+  return { tools, bmc, kvm, close: async () => { clearInterval(keepAlive); kvm.close(); await bmc.logout(); } };
 }

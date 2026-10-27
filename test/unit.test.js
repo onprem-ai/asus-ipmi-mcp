@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { startFakeBmc, ivtp } from './fake-bmc.js';
 import { Bmc } from '../src/bmc.js';
-import { cancelFlashMode, waitForBmc, normalizeVersion, currentFirmware } from '../src/firmware.js';
+import { cancelFlashMode, waitForBmc, normalizeVersion, currentFirmware, resetBmc } from '../src/firmware.js';
 import { login, loadSession } from '../src/session.js';
 import { KvmSession, CMD, PRIV, REQ } from '../src/kvm.js';
 import { createTools } from '../src/tools.js';
@@ -104,6 +104,35 @@ test('expired token (no restart): reloads a newer token file on 401', async () =
   await fake.close();
 });
 
+test('bmc_reset path: token mode restarts with the stored web session, reports re-login', async () => {
+  const fake = await startFakeBmc({ restartDownMs: 200 });
+  const bmc = await tokenBmc(fake);
+  const r = await resetBmc(bmc, () => {}, FAST);
+  assert.equal(r.bmc_up, true);
+  assert.equal(r.restart_seen, true);
+  assert.match(r.session, /login card/);
+  assert.ok(fake.st.calls.includes('POST /api/maintenance/reset'));
+  await fake.close();
+});
+
+test('bmc_reset refuses while a flash is in progress', async () => {
+  const fake = await startFakeBmc({ flashing: true });
+  const bmc = await tokenBmc(fake);
+  await assert.rejects(resetBmc(bmc, () => {}, FAST), /flash is in progress/);
+  assert.ok(!fake.st.calls.includes('POST /api/maintenance/reset'));
+  await fake.close();
+});
+
+test('token mode keeps the Redfish session alive', async () => {
+  const fake = await startFakeBmc();
+  const bmc = await tokenBmc(fake);
+  const { close } = createTools({ bmc, flags: { maxSide: 1024, redfishKeepAliveMs: 50 } });
+  await new Promise((r) => setTimeout(r, 180));
+  await close();
+  assert.ok(fake.st.calls.filter((c) => c === 'GET /redfish/v1/SessionService').length >= 2);
+  await fake.close();
+});
+
 // ---------- 2. password change required ----------
 test('password change required: clear message from web API and Redfish', async () => {
   const fake = await startFakeBmc();
@@ -152,7 +181,7 @@ test('KVM: RSV1 frame fails fast with a hint, and no deflate is offered', async 
   const bmc = new Bmc({ host: 'card', password: 'pw', origin: fake.origin });
   const k = kvmFor(fake, bmc);
   const t0 = Date.now();
-  await assert.rejects(k.ensure(), /RSV1.*not answering.*BMC Reset/s);
+  await assert.rejects(k.ensure(), /RSV1.*not answering.*bmc_reset/s);
   assert.ok(Date.now() - t0 < 5000);
   assert.equal(fake.st.lastUpgradeHeaders['sec-websocket-extensions'], undefined);
   assert.match(k.lastError.message, /RSV1/);
@@ -270,7 +299,7 @@ test('runSteps: one session, JSON per step, stops at the first failure', async (
     steps: [
       { tool: 'system_info', id: 'info' },
       { tool: 'sensors', args: { include_absent: true } },
-      { tool: 'power', args: { action: 'On' } },
+      { tool: 'no_such_tool' },
       { tool: 'system_info' },
     ],
   });
@@ -280,8 +309,14 @@ test('runSteps: one session, JSON per step, stops at the first failure', async (
   assert.equal(lines[0].result.bmc.FirmwareVersion, '1.01.35');
   assert.equal(lines[0].result.bmc.firmware_version, '1.1.35');
   assert.equal(lines[2].ok, false);
-  assert.match(lines[2].result, /opt-in/);
+  assert.match(lines[2].result, /unknown tool/);
   await fake.close();
+});
+
+test('all tools are available without any env flag', () => {
+  const bmc = { host: 'card', tokenMode: true, origin: 'http://x', logout: async () => {} };
+  const names = createTools({ bmc, flags: { maxSide: 1024 } }).tools.map((t) => t.name);
+  for (const n of ['power', 'set_boot_once', 'media_mount', 'media_configure_share', 'firmware_prepare', 'firmware_flash', 'bmc_reset']) assert.ok(names.includes(n), n);
 });
 
 test('runSteps: invalid args are reported per step', async () => {

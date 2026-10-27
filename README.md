@@ -85,9 +85,9 @@ checked:
 | **See** | Screenshots of the host screen (full or cropped for small text), wait until the screen changes, wake a sleeping display |
 | **Act** | Absolute mouse: click, double/right click, drag, scroll. Keyboard: type text, keys and combos (`f2`, `del`, `ctrl+alt+delete`, `super`, …) |
 | **Know** | BMC firmware, host power state, sensors, KVM status (resolution, other viewers) |
-| **Power** *(opt-in)* | On, off, graceful shutdown, restart; one-time boot device (CD, PXE, USB, BIOS setup) |
-| **Virtual media** *(opt-in, experimental)* | Attach an ISO from an NFS/CIFS share as a virtual CD |
-| **Card firmware** | Check for updates; download, verify and flash *(opt-in)* with dry run and confirmation token |
+| **Power** | On, off, graceful shutdown, restart; one-time boot device (CD, PXE, USB, BIOS setup) |
+| **Virtual media** *(experimental)* | Attach an ISO from an NFS/CIFS share as a virtual CD |
+| **Card firmware** | Check for updates; download, verify and flash with dry run |
 
 ### Status
 
@@ -139,9 +139,7 @@ claude mcp add asus-ipmi -e ASUS_IPMI_HOST=<card address> -- npx -y github:onpre
       "command": "npx",
       "args": ["-y", "github:onprem-ai/asus-ipmi-mcp"],
       "env": {
-        "ASUS_IPMI_HOST": "<card address>",
-        "ASUS_IPMI_ALLOW_POWER": "0",
-        "ASUS_IPMI_ALLOW_MEDIA": "0"
+        "ASUS_IPMI_HOST": "<card address>"
       }
     }
   }
@@ -168,7 +166,7 @@ config, the environment, the command line, shell history or logs, and the agent 
 sees it. The sessions expire on the card after inactivity; then run `login` again. A running
 server picks up the new tokens by itself, so there is no need to restart it or the agent.
 
-Sessions also end when **the card restarts** (firmware dry run or flash, `kvm_reset`, power loss),
+Sessions also end when **the card restarts** (firmware dry run or flash, `bmc_reset`, power loss),
 and possibly when someone logs in to the card's web UI or opens its viewer (seen in the field, not
 yet confirmed: the card may have a session limit). Tools then answer *"the stored session … run
 login again"*.
@@ -185,10 +183,6 @@ the card's web UI first, then run `login`.
 | `ASUS_IPMI_USER` | `admin` | Card user (needs KVM privilege) |
 | `ASUS_IPMI_PASSWORD` | – | Only for unattended use (CI, scripts). Leave it unset and use `login` instead |
 | `ASUS_IPMI_SESSION_FILE` | `~/.local/state/asus-ipmi-mcp/<host>.json` | Where `login` stores the session tokens |
-| `ASUS_IPMI_ALLOW_POWER` | off | `1` enables `power` and `set_boot_once` |
-| `ASUS_IPMI_ALLOW_MEDIA` | off | `1` enables `media_configure_share`, `media_mount`, … |
-| `ASUS_IPMI_ALLOW_FIRMWARE` | off | `1` enables `firmware_prepare` and `firmware_flash` (card firmware update) |
-| `ASUS_IPMI_ALLOW_BMC_RESET` | off | `1` enables `kvm_reset` (restarts the card to fix a stuck KVM; the host keeps running) |
 | `ASUS_IPMI_SCREENSHOT_MAX` | `1024` | Long side of returned screenshots (pixels) |
 
 ## Tools
@@ -204,13 +198,13 @@ the card's web UI first, then run `login`.
 | `system_info` | BMC firmware (`FirmwareVersion` as Redfish spells it, e.g. `1.01.35`, and `firmware_version` normalised, `1.1.35`), host power state, host BIOS/model |
 | `sensors` | Temperatures, fans, voltages |
 | `media_status` | Virtual-media settings and active redirections |
-| `power` *(opt-in)* | `On`, `ForceOff`, `GracefulShutdown`, `ForceRestart` |
-| `set_boot_once` *(opt-in)* | Next boot from `Cd`, `Pxe`, `Usb`, `Hdd`, `BiosSetup` |
-| `media_configure_share`, `media_list_images`, `media_mount`, `media_unmount` *(opt-in)* | Attach an ISO from an NFS/CIFS share as virtual CD |
+| `power` | `On`, `ForceOff`, `GracefulShutdown`, `ForceRestart` |
+| `set_boot_once` | Next boot from `Cd`, `Pxe`, `Usb`, `Hdd`, `BiosSetup` |
+| `media_configure_share`, `media_list_images`, `media_mount`, `media_unmount` | Attach an ISO from an NFS/CIFS share as virtual CD |
 | `firmware_check_update` | Card firmware vs. releases on the ASUS support page (version, date, SHA-256) |
-| `firmware_prepare` *(opt-in)* | Download + verify a card firmware (ASUS SHA-256, MD5, model match); `dry_run` lets the card verify it and cancels. Returns a `confirm_token` |
-| `firmware_flash` *(opt-in)* | Flash the prepared image (needs the `confirm_token`), keeps settings, waits for the card to return |
-| `kvm_reset` *(opt-in)* | Restart the card (Maintenance → BMC Reset) when its KVM is stuck; waits until it is back |
+| `firmware_prepare` | Download + verify a card firmware (ASUS SHA-256, MD5, model match); `dry_run` lets the card verify it and cancels. Returns a `confirm_token` |
+| `firmware_flash` | Flash the prepared image (needs the `confirm_token`), keeps settings, waits for the card to return |
+| `bmc_reset` | Restart the card when its KVM is stuck; works with the stored session (no password). Host keeps running; all card sessions and virtual-media mounts end. Refused during a flash |
 
 ### Card firmware update
 
@@ -246,8 +240,8 @@ replaces `type_text` → `wait_for_screen_change` → `screenshot`.
 
 ## Command line (no MCP client)
 
-For CI, scripts and agents that cannot load MCP servers. Same credentials (`login` tokens) and
-`ASUS_IPMI_ALLOW_*` flags as the server.
+For CI, scripts and agents that cannot load MCP servers. Same credentials (`login` tokens) as the
+server.
 
 ```bash
 asus-ipmi-mcp tools                                   # list tools
@@ -291,8 +285,12 @@ unless `--keep-going`), 2 on usage errors.
   viewer denies or blocks the request, the tools say so: close the viewer and retry.
 - **KVM error "RSV1 must be clear" / "KVM service is not answering"**: the card's KVM service is
   stuck. Its web server then writes a plain HTTP reply into the KVM websocket, which shows up as an
-  RSV1 frame error. It is not a compression problem. Restart the card (Maintenance → BMC Reset, or
-  `kvm_reset` with `ASUS_IPMI_ALLOW_BMC_RESET=1`); the host keeps running.
+  RSV1 frame error. It is not a compression problem. Restart the card with `bmc_reset`; the host
+  keeps running. Firmware 1.3.13 has no "BMC Reset" tile
+  in the web UI. Seen on 1.1.35 and 1.3.13, fixed by the restart both times.
+- **Redfish session timeout is 30 s on these cards** (`SessionService.SessionTimeout`), unlike the
+  web session (30 min). After half a minute without Redfish calls, `system_info`, `sensors` and
+  `power` need a new `login`; the KVM, firmware and media tools keep working.
 - **Black screen / "no signal"** usually means the host display is asleep. `screenshot` nudges the
   mouse to wake it. For unattended work, disable screen blanking on the host.
 - **No monitor needed** on the host: the card provides the display. A monitor attached to the board's
@@ -312,7 +310,8 @@ physical access over the network.
 - **Use `login`, not `ASUS_IPMI_PASSWORD`.** The card password stays out of the MCP config, the
   environment and the agent's reach; only expiring session tokens are stored (mode 600). `logout`
   ends the sessions right away.
-- Keep `ASUS_IPMI_ALLOW_POWER`, `ASUS_IPMI_ALLOW_MEDIA` and `ASUS_IPMI_ALLOW_FIRMWARE` off unless needed.
+- All tools are available to whoever holds the session; protect the token file (mode 600) and
+  run `logout` when done.
 - Use a dedicated card user and put the card on a management network.
 - Review what the agent does.
 

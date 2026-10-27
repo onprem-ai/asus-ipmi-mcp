@@ -14,7 +14,7 @@ export const INSTRUCTIONS =
   'Mouse coordinates are absolute screen pixels. Keyboard assumes a US layout on the host. ' +
   'A black screen usually means the host display is asleep; screenshot nudges the mouse to wake it. ' +
   'Only one controlling KVM session exists per card: using these tools takes control from an open browser viewer. ' +
-  'A card restart (firmware dry run/flash, kvm_reset) ends a login session: the user must run "asus-ipmi-mcp login <host>" again.';
+  'A card restart (firmware dry run/flash, bmc_reset) ends a login session: the user must run "asus-ipmi-mcp login <host>" again.';
 
 export async function main() {
   if (!env.ASUS_IPMI_HOST) {
@@ -32,7 +32,7 @@ export async function main() {
   }
   await server.connect(new StdioServerTransport());
   log(`v${VERSION} ready for ${env.ASUS_IPMI_HOST}, auth: ${bmc.tokenMode ? `session tokens (${bmc.sessionPath})` : 'password'} ` +
-    `(power: ${flags.power ? 'on' : 'off'}, media write: ${flags.media ? 'on' : 'off'}, firmware flash: ${flags.firmware ? 'on' : 'off'}, bmc reset: ${flags.bmcReset ? 'on' : 'off'})`);
+    `(${tools.length} tools)`);
   const shutdown = async () => { await close(); process.exit(0); };
   process.on('SIGINT', shutdown); process.on('SIGTERM', shutdown);
   process.stdin.on('close', shutdown);
