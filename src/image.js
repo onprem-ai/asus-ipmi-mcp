@@ -47,12 +47,17 @@ export function encode(img, format = 'png', quality = 85) {
   return { mimeType: 'image/png', data: PNG.sync.write(png) };
 }
 
-/** Fraction of pixels that differ between two RGBA buffers of the same size. */
-export function diffRatio(a, b) {
+/**
+ * Fraction of pixels that differ between two RGBA buffers of the same size.
+ * tolerance: max per-channel difference still counted as "same". The card's video is lossy:
+ * on smooth gradients (e.g. a GNOME lock screen) consecutive frames differ by a few levels in
+ * most pixels, so exact comparison (tolerance 0) reports large changes on a still screen.
+ */
+export function diffRatio(a, b, tolerance = 0) {
   if (!a || !b || a.length !== b.length) return 1;
   let d = 0, n = a.length / 4;
   for (let i = 0; i < a.length; i += 16) {          // sample every 4th pixel
-    if (a[i] !== b[i] || a[i + 1] !== b[i + 1] || a[i + 2] !== b[i + 2]) d++;
+    if (Math.abs(a[i] - b[i]) > tolerance || Math.abs(a[i + 1] - b[i + 1]) > tolerance || Math.abs(a[i + 2] - b[i + 2]) > tolerance) d++;
   }
   return d / (n / 4);
 }

@@ -53,6 +53,7 @@ export async function startFakeBmc(opts = {}) {
       if (url.startsWith('/api/')) {
         if (st.passwordChange) return json(res, 401, { cc: 7, error: 'Password should be changed for default user and should have a minimum of 8 characters.' });
         if (!st.sessions.has(req.headers['x-csrftoken'])) return json(res, 401, { cc: 7, error: 'Invalid Authentication' });
+        if (url === '/api/maintenance/flashtrack') return json(res, 200, st.flashing ? { status: 'flashing' } : { status: 'ok' });
         if (url === '/api/maintenance/reset') { json(res, 200, {}); setTimeout(restart, 20); return; }
         if (url === '/api/Information') return json(res, 200, { FWVersion: st.version, FWDate: 'x', FWModels: [{ Model: 'KOMMANDO' }] });
         if (url === '/api/chassis-status') return json(res, 200, { power_status: 1 });

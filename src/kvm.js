@@ -37,14 +37,14 @@ const RESPONSE_TEXT = {
   [REQ.BLOCKED_PARTIAL]: `${VIEWER_HOLDS} and blocks requests (view-only). Close it and retry.`,
   [REQ.BLOCKED_DENIED]: `${VIEWER_HOLDS} and blocks all requests. Close it and retry.`,
 };
-// "Invalid WebSocket frame: RSV1 must be clear": seen on firmware 1.1.35 (192.168.0.20, 2026-10-27).
+// "Invalid WebSocket frame: RSV1 must be clear": seen on firmware 1.1.35 and 1.3.13 (2026-10-27).
 // The card answers the upgrade with 101, then its web server (lighttpd) writes a plain
 // "HTTP/1.1 200 OK ..." response INTO the websocket stream: the byte 'H' (0x48) parses as a frame
 // with RSV1 set and opcode 8. So the KVM backend behind the web server is not answering; this is
 // not a compression problem (the card sends the same with and without a deflate offer).
-const RSV1_HINT = "The card's KVM service is not answering (its web server replied with plain HTTP inside the KVM websocket). " +
-  'This happens when the KVM service on the card is stuck, e.g. after a browser viewer session. ' +
-  'Restart the card (web UI Maintenance → BMC Reset, or the kvm_reset tool with ASUS_IPMI_ALLOW_BMC_RESET=1); the host keeps running.';
+const RSV1_HINT = "The card's KVM service is not answering (its web server replied with plain HTTP inside the KVM websocket): the KVM service on the card is stuck. " +
+  'The bmc_reset tool restarts the card; the host keeps running. ' +
+  'Afterwards run "asus-ipmi-mcp login <host>" again (the restart ends all card sessions).';
 
 /** Turn low-level websocket errors into actionable messages. */
 export function explainWsError(msg) {
@@ -255,7 +255,11 @@ export class KvmSession extends EventEmitter {
       if (answer === REQ.ALLOWED) this.setControl('ours', `control granted by the other client${who}`, other);
       else if (answer === REQ.PARTIAL || answer === REQ.BLOCKED_PARTIAL) this.setControl('view_only', `the other client${who} granted view-only access`, other);
       else this.setControl('denied', `the other client${who} denied control (answer ${answer})`, other);
-    } else if (step === PRIV.SWITCH_MASTER) this.setControl('switching', `KVM control is switching${who}`, other);
+    } else if (step === PRIV.SWITCH_MASTER) {
+      // Sent right after validation with answer 0 when this client becomes the controlling one.
+      if (answer === REQ.ALLOWED && (this.validated || type === CMD.SET_NEXT_MASTER)) this.setControl('ours', 'this client holds KVM control', other);
+      else this.setControl('switching', `KVM control is switching${who} (answer ${answer})`, other);
+    }
     this.log(`KVM sharing: ${NAMES[type]} step ${step} answer ${answer}${who}`);
     this.emit('sharing', { step, answer, other });
   }

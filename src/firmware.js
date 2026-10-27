@@ -264,7 +264,23 @@ export async function flashImage(bmc, { imagePath, flash = false, preserveConfig
  * Returns { recovered, ...afterRestart() }.
  */
 export async function cancelFlashMode(bmc, onProgress = () => {}, timing = {}) {
-  try { await bmc.api('POST', '/api/maintenance/reset', {}); } catch (e) { onProgress(`reset call: ${e.message} (expected if the BMC is already restarting)`); }
+  return restartCard(bmc, onProgress, timing);
+}
+
+/**
+ * The one restart path: POST /api/maintenance/reset (the request the card's web UI sends to
+ * cancel a flash; on 1.3.13 there is no "BMC Reset" tile), then follow the restart with isUp().
+ * Works with the stored web session alone (no password). It may answer 200 {} or drop the
+ * connection (usual in flash mode): both count as "sent". Only an HTTP refusal is an error.
+ */
+async function restartCard(bmc, onProgress, timing) {
+  try {
+    await bmc.api('POST', '/api/maintenance/reset', {});
+    onProgress('reset request accepted');
+  } catch (e) {
+    if (/HTTP \d{3}/.test(e.message) && !/HTTP 5\d\d/.test(e.message)) throw new Error(`card refused the restart: ${e.message}`);
+    onProgress(`reset request: ${e.message} (counts as sent: the card often drops the connection while restarting)`);
+  }
   return restartResult(bmc, await bmc.waitForRestart({ downMs: 90000, upMs: 4 * 60000, onProgress, ...timing }), onProgress);
 }
 
@@ -296,7 +312,18 @@ export async function waitForBmc(bmc, { timeoutMs = 10 * 60000, onProgress = () 
   return r;
 }
 
-/** Restart the card (Maintenance → BMC reset). The host keeps running. */
+/**
+ * Restart the card on request (bmc_reset tool). Refuses while a firmware flash is in progress:
+ * there the same request would cancel the flash, and only the flash tools may do that.
+ */
 export async function resetBmc(bmc, onProgress = () => {}, timing = {}) {
-  return cancelFlashMode(bmc, onProgress, timing);
+  let track = null;
+  try { track = await bmc.api('GET', '/api/maintenance/flashtrack'); } catch (e) {
+    if (/requires a new password|session/i.test(e.message)) throw e;
+    onProgress(`flash state unknown (${e.message}); restarting anyway`);
+  }
+  if (track && track.status && track.status !== 'ok') {
+    throw new Error(`a firmware flash is in progress on the card (${JSON.stringify(track).slice(0, 120)}): not restarting. Wait for it to finish; never cut power during a flash.`);
+  }
+  return restartCard(bmc, onProgress, timing);
 }
