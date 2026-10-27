@@ -1,4 +1,5 @@
 // Read-only info and power control via Redfish (AMI Redfish server on the BMC).
+import { normalizeVersion } from './firmware.js';
 
 const pick = (o, keys) => Object.fromEntries(keys.filter((k) => o?.[k] !== undefined).map((k) => [k, o[k]]));
 
@@ -8,8 +9,11 @@ export async function systemInfo(bmc) {
     bmc.redfish('GET', '/redfish/v1/Systems/Self'),
     bmc.redfish('GET', '/redfish/v1/Chassis/Self').catch(() => ({})),
   ]);
+  const bmcInfo = pick(mgr, ['Model', 'FirmwareVersion', 'Status', 'DateTime', 'UUID']);
+  // Redfish spells the version "1.01.35"; the web API and the ASUS support page "1.1.35".
+  if (bmcInfo.FirmwareVersion) bmcInfo.firmware_version = normalizeVersion(bmcInfo.FirmwareVersion);
   return {
-    bmc: pick(mgr, ['Model', 'FirmwareVersion', 'Status', 'DateTime', 'UUID']),
+    bmc: bmcInfo,
     host: pick(sys, ['Manufacturer', 'Model', 'PowerState', 'BiosVersion', 'Status', 'IndicatorLED', 'Boot']),
     chassis: pick(chassis, ['ChassisType', 'Manufacturer', 'Model', 'PowerState', 'Status']),
     note: !sys.BiosVersion ? 'Host BIOS/model fields are empty: typical when the motherboard runs a BIOS without IPMI support (ASUS calls for a special IPMI BIOS).' : undefined,

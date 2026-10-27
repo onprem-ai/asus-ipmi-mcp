@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Agent, fetch } from 'undici';
+import { isPasswordChangeRequired, passwordChangeMessage } from './bmc.js';
 
 export function sessionFile(host, file = process.env.ASUS_IPMI_SESSION_FILE) {
   if (file) return file;
@@ -55,35 +56,78 @@ export function promptHidden(question) {
   });
 }
 
-export async function login({ host, user = 'admin', file }) {
+/**
+ * One check call per session right after login. The card hands out sessions even while the
+ * default password must still be changed, then refuses every call with it; catch that here
+ * instead of storing unusable tokens.
+ */
+async function checkSessions({ origin, dispatcher, web, redfish, user, host }) {
+  const problems = [];
+  const checks = [
+    ['web API', `${origin}/api/chassis-status`, { 'X-CSRFTOKEN': web.csrf, cookie: web.cookie }],
+    ...(redfish ? [['Redfish', `${origin}/redfish/v1/Managers/Self`, { 'X-Auth-Token': redfish.token || '' }]] : []),
+  ];
+  for (const [name, url, headers] of checks) {
+    let r, t;
+    try { r = await fetch(url, { dispatcher, headers }); t = await r.text(); } catch (e) { problems.push({ name, warn: `${name} check failed: ${e.message}` }); continue; }
+    if (isPasswordChangeRequired(t)) return { fatal: passwordChangeMessage(user, host) };
+    if (r.status !== 200) problems.push({ name, warn: `${name} check: HTTP ${r.status} ${t.slice(0, 160)}` });
+  }
+  return { problems };
+}
+
+async function deleteSessions({ origin, dispatcher, web, redfish }) {
+  if (web) await fetch(`${origin}/api/session`, { method: 'DELETE', dispatcher, headers: { 'X-CSRFTOKEN': web.csrf || '', cookie: web.cookie || '' } }).catch(() => {});
+  if (redfish?.uri) {
+    const u = redfish.uri.startsWith('http') ? redfish.uri : `${origin}${redfish.uri}`;
+    await fetch(u, { method: 'DELETE', dispatcher, headers: { 'X-Auth-Token': redfish.token } }).catch(() => {});
+  }
+}
+
+export async function login({ host, user = 'admin', file, origin = null, readPassword = promptHidden }) {
   if (!host) throw new Error('usage: asus-ipmi-mcp login <host> [--user <user>]');
+  origin = origin || `https://${host}`;
   const dispatcher = new Agent({ connect: { rejectUnauthorized: false } });
-  let password = await promptHidden(`Password for ${user}@${host} (not stored): `);
+  let password = await readPassword(`Password for ${user}@${host} (not stored): `);
   try {
     // Web session: used by the KVM, virtual media and firmware tools.
-    const r = await fetch(`https://${host}/api/session`, {
+    const r = await fetch(`${origin}/api/session`, {
       method: 'POST', dispatcher,
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ username: user, password }).toString(),
     });
     const t = await r.text();
-    if (!r.ok) throw new Error(`login failed: HTTP ${r.status}${t.includes('17000') ? ' (wrong credentials, or the card is in flash mode)' : ''}`);
+    if (!r.ok) {
+      if (isPasswordChangeRequired(t)) throw new Error(`login: ${passwordChangeMessage(user, host)}`);
+      throw new Error(`login failed: HTTP ${r.status}${t.includes('17000') ? ' (wrong credentials, or the card is in flash mode)' : ''}`);
+    }
     const j = JSON.parse(t);
     const cookie = (r.headers.getSetCookie ? r.headers.getSetCookie() : [])
       .map((c) => c.split(';')[0]).filter((c) => c.startsWith('QSESSIONID=')).join('; ');
 
     // Redfish session: used by system_info, sensors, power.
     let redfish = null;
-    const rr = await fetch(`https://${host}/redfish/v1/SessionService/Sessions`, {
+    const rr = await fetch(`${origin}/redfish/v1/SessionService/Sessions`, {
       method: 'POST', dispatcher,
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ UserName: user, Password: password }),
     });
+    const rt = await rr.text();
     if (rr.ok) redfish = { token: rr.headers.get('x-auth-token'), uri: rr.headers.get('location') };
-    else process.stderr.write(`warning: Redfish session refused (HTTP ${rr.status}); Redfish tools will fail\n`);
+    else if (isPasswordChangeRequired(rt)) throw new Error(`login: ${passwordChangeMessage(user, host)}`);
+    else process.stderr.write(`warning: Redfish session refused (HTTP ${rr.status}); Redfish tools (system_info, sensors, power) will fail\n`);
 
-    const f = saveSession(host, { host, user, created: new Date().toISOString(), web: { cookie, csrf: j.CSRFToken }, redfish }, file);
-    process.stderr.write(`Sessions stored in ${f} (mode 600, no password). They expire on the card after inactivity; end them with: asus-ipmi-mcp logout ${host}\n`);
+    const web = { cookie, csrf: j.CSRFToken };
+    const check = await checkSessions({ origin, dispatcher, web, redfish, user, host });
+    if (check.fatal) {
+      await deleteSessions({ origin, dispatcher, web, redfish });
+      throw new Error(`login: ${check.fatal}`);
+    }
+    for (const p of check.problems) process.stderr.write(`warning: ${p.warn}\n`);
+
+    const f = saveSession(host, { host, user, created: new Date().toISOString(), web, redfish }, file);
+    process.stderr.write(`Sessions stored in ${f} (mode 600, no password). They expire on the card after inactivity, and a card restart ends them; end them now with: asus-ipmi-mcp logout ${host}\n`);
+    return { file: f, warnings: check.problems.map((p) => p.warn) };
   } finally {
     password = null;
   }
@@ -95,11 +139,7 @@ export async function logout({ host, file }) {
   const s = loadSession(host, file);
   if (!s) { process.stderr.write(`no session file ${f}\n`); return; }
   const dispatcher = new Agent({ connect: { rejectUnauthorized: false } });
-  await fetch(`https://${host}/api/session`, { method: 'DELETE', dispatcher, headers: { 'X-CSRFTOKEN': s.web?.csrf || '', cookie: s.web?.cookie || '' } }).catch(() => {});
-  if (s.redfish?.uri) {
-    const u = s.redfish.uri.startsWith('http') ? s.redfish.uri : `https://${host}${s.redfish.uri}`;
-    await fetch(u, { method: 'DELETE', dispatcher, headers: { 'X-Auth-Token': s.redfish.token } }).catch(() => {});
-  }
+  await deleteSessions({ origin: `https://${host}`, dispatcher, web: s.web, redfish: s.redfish });
   fs.rmSync(f, { force: true });
   process.stderr.write(`Sessions ended on the card and ${f} removed.\n`);
 }

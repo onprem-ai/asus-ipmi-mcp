@@ -23,13 +23,13 @@ function cacheDir() {
 export async function loadDecoderSource(bmc, firmwareTag = 'unknown') {
   const key = crypto.createHash('sha1').update(`${bmc.host}|${firmwareTag}`).digest('hex').slice(0, 12);
   const file = path.join(cacheDir(), `decode_worker-${key}.js`);
-  if (fs.existsSync(file)) return fs.readFileSync(file, 'latin1');
+  try { if (fs.existsSync(file)) return fs.readFileSync(file, 'latin1'); } catch { /* unreadable cache: download again */ }
   const buf = await bmc.getStatic(DECODER_PATH);
   const src = buf.toString('latin1');
   if (!src.includes('Decoder.prototype') || !src.includes("cmd: 'draw'")) {
     throw new Error(`Unexpected content at ${DECODER_PATH}; this BMC may use a different video engine`);
   }
-  fs.writeFileSync(file, src, 'latin1');
+  try { fs.writeFileSync(file, src, 'latin1'); } catch { /* cache is best effort (read-only home, sandbox) */ }
   return src;
 }
 

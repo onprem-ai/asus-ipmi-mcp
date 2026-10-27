@@ -30,11 +30,16 @@ function workDir() {
   throw new Error('no writable cache directory');
 }
 
-const verKey = (v) => String(v).split('.').map((x) => x.padStart(4, '0')).join('.');
+/**
+ * One firmware version, two spellings: Redfish FirmwareVersion "1.01.35", web API / ASUS "1.1.35".
+ * Normalised form drops leading zeros per part ("1.01.35" -> "1.1.35").
+ */
+export const normalizeVersion = (v) => (v == null ? v : String(v).trim().split('.').map((x) => (/^\d+$/.test(x) ? String(+x) : x)).join('.'));
+const verKey = (v) => normalizeVersion(v).split('.').map((x) => x.padStart(4, '0')).join('.');
 
 export async function currentFirmware(bmc) {
   const info = await bmc.api('GET', '/api/Information');
-  return { version: info.FWVersion, date: info.FWDate, model: info.FWModels?.[0]?.Model, hardware: info.HWVersion };
+  return { version: normalizeVersion(info.FWVersion), date: info.FWDate, model: info.FWModels?.[0]?.Model, hardware: info.HWVersion };
 }
 
 /** Parse the ASUS support page for firmware releases (version, date, sha256, CDN path). */
@@ -158,7 +163,7 @@ export async function prepareImage(bmc, { source, sha256 }) {
 
   const imaPath = path.join(dir, `bmc-${crypto.createHash('sha1').update(imaBuf).digest('hex').slice(0, 10)}.ima`);
   if (!fs.existsSync(imaPath)) fs.writeFileSync(imaPath, imaBuf);
-  return { image_path: imaPath, size: imaBuf.length, image_version: imgVersion || null, current: cur, checks, source: label };
+  return { image_path: imaPath, size: imaBuf.length, image_version: normalizeVersion(imgVersion) || null, current: cur, checks, source: label };
 }
 
 /**
@@ -212,10 +217,11 @@ export async function flashImage(bmc, { imagePath, flash = false, preserveConfig
     onProgress(`verified by BMC (sections: ${sections.join(', ') || '?'})`);
 
     if (!flash) {
-      const recovered = await cancelFlashMode(bmc, onProgress);
+      const after = await cancelFlashMode(bmc, onProgress);
       return {
-        flashed: false, verified: true, sections, bmc_recovered: recovered,
-        note: recovered ? 'Dry run OK: image uploaded and verified by the card, flash mode cancelled, card back online. Firmware unchanged.'
+        flashed: false, verified: true, sections, bmc_recovered: after.recovered, after,
+        note: after.recovered
+          ? `Dry run OK: image uploaded and verified by the card, flash mode cancelled, card back online. Firmware unchanged.${after.session ? ' The restart ended the stored session: run login again.' : ''}`
           : 'Image verified, but the card did not come back after cancelling: AC power cycle the host (PSU off ~30 s). Firmware unchanged.',
       };
     }
@@ -224,9 +230,9 @@ export async function flashImage(bmc, { imagePath, flash = false, preserveConfig
   } catch (e) {
     if (!started) {
       onProgress(`error before flashing (${e.message}); cancelling flash mode`);
-      const recovered = await cancelFlashMode(bmc, onProgress);
-      throw new Error(recovered
-        ? `${e.message}. Flash mode cancelled, BMC restarted and accepts logins again; firmware unchanged.`
+      const after = await cancelFlashMode(bmc, onProgress);
+      throw new Error(after.recovered
+        ? `${e.message}. Flash mode cancelled, BMC restarted and is back; firmware unchanged.${after.session ? ` Stored session ${after.session}.` : ''}`
         : `${e.message}. Cancel did not work: the BMC still refuses logins (locked in flash mode). AC power cycle the host (PSU off ~30 s). Firmware is unchanged.`);
     }
     throw e;
@@ -253,26 +259,44 @@ export async function flashImage(bmc, { imagePath, flash = false, preserveConfig
 
 /**
  * Leave flash mode with the same session (POST /api/maintenance/reset restarts the BMC).
- * The reset often drops the connection before replying, so success is judged by whether
- * the BMC accepts a fresh login again within ~4 min.
+ * The reset often drops the connection before replying. The restart is followed with the
+ * unauthenticated Bmc.isUp() (down, then up); a token-mode "login" never contacts the card.
+ * Returns { recovered, ...afterRestart() }.
  */
-async function cancelFlashMode(bmc, onProgress = () => {}) {
+export async function cancelFlashMode(bmc, onProgress = () => {}, timing = {}) {
   try { await bmc.api('POST', '/api/maintenance/reset', {}); } catch (e) { onProgress(`reset call: ${e.message} (expected if the BMC is already restarting)`); }
-  bmc.csrf = null;
-  const t0 = Date.now();
-  await sleep(20000);
-  while (Date.now() - t0 < 4 * 60000) {
-    try { await bmc.login(); onProgress(`BMC back after ${Math.round((Date.now() - t0) / 1000)} s`); return true; } catch { await sleep(10000); }
-  }
-  return false;
+  return restartResult(bmc, await bmc.waitForRestart({ downMs: 90000, upMs: 4 * 60000, onProgress, ...timing }), onProgress);
 }
 
-/** After a flash: wait until the BMC answers again and report its version. */
-export async function waitForBmc(bmc, timeoutMs = 8 * 60000) {
-  const t0 = Date.now();
-  await sleep(30000);
-  while (Date.now() - t0 < timeoutMs) {
-    try { bmc.csrf = null; await bmc.login(); return await currentFirmware(bmc); } catch { await sleep(15000); }
+/**
+ * After a card restart: password mode logs in again and reads the version; token mode reports
+ * that the stored sessions ended (the restart invalidates them) and how to renew them.
+ */
+async function restartResult(bmc, w, onProgress) {
+  const base = { bmc_up: w.up, restart_seen: w.saw_down, seconds: w.seconds };
+  if (!w.up) return { recovered: false, ...base };
+  bmc.csrf = null;
+  if (bmc.tokenMode) {
+    bmc.endSession('card restart');
+    return { recovered: true, ...base, session: `ended by card restart – run "asus-ipmi-mcp login ${bmc.host}" again (the server picks the new tokens up without a restart)` };
   }
-  throw new Error('BMC did not come back within the timeout – do NOT power cycle yet; wait longer, then check the web UI');
+  for (let i = 0; i < 6; i++) {
+    try { await bmc.login(); return { recovered: true, ...base, firmware: await currentFirmware(bmc) }; } catch (e) {
+      if (i === 5) { onProgress(`card is up but login failed: ${e.message}`); return { recovered: true, ...base, login_error: e.message }; }
+      await sleep(10000);
+    }
+  }
+}
+
+/** Kept for compatibility: restart after a flash. Returns the restartResult object (bmc_up, firmware or session hint). */
+export async function waitForBmc(bmc, { timeoutMs = 10 * 60000, onProgress = () => {}, ...timing } = {}) {
+  const w = await bmc.waitForRestart({ downMs: 3 * 60000, upMs: timeoutMs, onProgress, ...timing });
+  const r = await restartResult(bmc, w, onProgress);
+  if (!r.bmc_up) throw new Error('BMC did not come back within the timeout – do NOT power cycle yet; wait longer, then check the web UI');
+  return r;
+}
+
+/** Restart the card (Maintenance → BMC reset). The host keeps running. */
+export async function resetBmc(bmc, onProgress = () => {}, timing = {}) {
+  return cancelFlashMode(bmc, onProgress, timing);
 }
