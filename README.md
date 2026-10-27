@@ -165,7 +165,17 @@ session on the card, and stores **only the session tokens** in a file readable b
 alone (mode 600). Then configure the MCP server with `ASUS_IPMI_HOST` and **no**
 `ASUS_IPMI_PASSWORD`: it runs on the tokens. The password never appears in the MCP
 config, the environment, the command line, shell history or logs, and the agent never
-sees it. The sessions expire on the card after inactivity; then run `login` again.
+sees it. The sessions expire on the card after inactivity; then run `login` again. A running
+server picks up the new tokens by itself, so there is no need to restart it or the agent.
+
+Sessions also end when **the card restarts** (firmware dry run or flash, `kvm_reset`, power loss),
+and possibly when someone logs in to the card's web UI or opens its viewer (seen in the field, not
+yet confirmed: the card may have a session limit). Tools then answer *"the stored session … run
+login again"*.
+
+If the card still has its **default password**, it hands out sessions but refuses every call.
+`login` detects this and stops with *"the card requires a new password …"*. Change the password in
+the card's web UI first, then run `login`.
 
 ### Configuration
 
@@ -178,19 +188,20 @@ sees it. The sessions expire on the card after inactivity; then run `login` agai
 | `ASUS_IPMI_ALLOW_POWER` | off | `1` enables `power` and `set_boot_once` |
 | `ASUS_IPMI_ALLOW_MEDIA` | off | `1` enables `media_configure_share`, `media_mount`, … |
 | `ASUS_IPMI_ALLOW_FIRMWARE` | off | `1` enables `firmware_prepare` and `firmware_flash` (card firmware update) |
+| `ASUS_IPMI_ALLOW_BMC_RESET` | off | `1` enables `kvm_reset` (restarts the card to fix a stuck KVM; the host keeps running) |
 | `ASUS_IPMI_SCREENSHOT_MAX` | `1024` | Long side of returned screenshots (pixels) |
 
 ## Tools
 
 | Tool | What |
 |---|---|
-| `screenshot` | Current screen as an image (optional crop region for small text). Wakes a sleeping display. |
+| `screenshot` | Current screen as an image (optional crop region for small text) and a `screen_id`. Wakes a sleeping display. |
 | `wait_for_screen_change` | Blocks until the screen changes (boot, install step), returns a screenshot |
 | `click`, `move_mouse`, `drag`, `scroll` | Absolute mouse in screen pixels |
-| `type_text` | Type text (US layout, `\n` = Enter) |
-| `press_keys` | Keys / combos: `enter`, `f2`, `del`, `ctrl+alt+delete`, `ctrl+alt+f3`, `super`, with repeat |
-| `kvm_status` | Resolution, display blank?, mouse mode, other KVM clients |
-| `system_info` | BMC firmware, host power state, host BIOS/model |
+| `type_text` | Type text (US layout, `\n` = Enter). `expect_screen`: refuse if the screen changed since that screenshot. `then_screenshot`: return the settled screen afterwards |
+| `press_keys` | Keys / combos: `enter`, `f2`, `del`, `ctrl+alt+delete`, `ctrl+alt+f3`, `super`, with repeat; same `expect_screen` / `then_screenshot` |
+| `kvm_status` | Who holds KVM control, last connect error, resolution, display blank?, mouse mode. Reports problems instead of failing |
+| `system_info` | BMC firmware (`FirmwareVersion` as Redfish spells it, e.g. `1.01.35`, and `firmware_version` normalised, `1.1.35`), host power state, host BIOS/model |
 | `sensors` | Temperatures, fans, voltages |
 | `media_status` | Virtual-media settings and active redirections |
 | `power` *(opt-in)* | `On`, `ForceOff`, `GracefulShutdown`, `ForceRestart` |
@@ -199,6 +210,7 @@ sees it. The sessions expire on the card after inactivity; then run `login` agai
 | `firmware_check_update` | Card firmware vs. releases on the ASUS support page (version, date, SHA-256) |
 | `firmware_prepare` *(opt-in)* | Download + verify a card firmware (ASUS SHA-256, MD5, model match); `dry_run` lets the card verify it and cancels. Returns a `confirm_token` |
 | `firmware_flash` *(opt-in)* | Flash the prepared image (needs the `confirm_token`), keeps settings, waits for the card to return |
+| `kvm_reset` *(opt-in)* | Restart the card (Maintenance → BMC Reset) when its KVM is stuck; waits until it is back |
 
 ### Card firmware update
 
@@ -215,7 +227,51 @@ with the returned token. What it protects against:
 
 The update only touches the IPMI card, not the motherboard BIOS. The host keeps running.
 
-Typical agent loop: `screenshot` → decide → `click` / `type_text` / `press_keys` → `wait_for_screen_change`.
+**Both a dry run and a flash restart the card, and the restart ends the stored login sessions.**
+The tools follow the restart without logging in (the card goes down, then comes back) and report
+`bmc_up: true` with `session: "ended by card restart – run asus-ipmi-mcp login <host> again"`.
+Run `login` again before the next call (the server picks up the new tokens). With
+`ASUS_IPMI_PASSWORD` the server logs in again by itself and reports the new version.
+
+## Typical agent loop
+
+`screenshot` → decide → `type_text` / `press_keys` with `expect_screen: <screen_id>` and
+`then_screenshot: true` → decide.
+
+**Always look right before typing.** In the field, an agent typed shell commands into a GNOME
+lock-screen password field and into a `sudo` password prompt because it assumed a shell. With
+`expect_screen`, nothing is typed if the screen changed since that screenshot (the tool returns the
+current screen instead). `then_screenshot` waits for the screen to react and settle, so one call
+replaces `type_text` → `wait_for_screen_change` → `screenshot`.
+
+## Command line (no MCP client)
+
+For CI, scripts and agents that cannot load MCP servers. Same credentials (`login` tokens) and
+`ASUS_IPMI_ALLOW_*` flags as the server.
+
+```bash
+asus-ipmi-mcp tools                                   # list tools
+asus-ipmi-mcp call <host> system_info
+asus-ipmi-mcp call <host> screenshot '{"region":{"x":0,"y":80,"width":600,"height":200}}' --out shot.png
+asus-ipmi-mcp run <host> steps.json --out-dir shots/  # several steps in ONE session
+```
+
+`steps.json` is a list of `{"tool", "args", "id"?}`. All steps run in one process, so the KVM
+connection, `screen_id`s and the firmware `confirm_token` carry over. Args can use earlier results:
+`"$prev.<field>"` or `"$steps.<n or id>.<field>"`:
+
+```json
+[
+  { "tool": "screenshot" },
+  { "tool": "type_text", "args": { "text": "ip -br addr\n", "expect_screen": "$prev.screen_id", "then_screenshot": true } },
+  { "tool": "firmware_prepare", "id": "prep", "args": { "source": "1.3.13" } },
+  { "tool": "firmware_flash", "args": { "confirm_token": "$steps.prep.confirm_token" } }
+]
+```
+
+stdout gets one JSON line per step (`{step, tool, ok, result, images}`), images go to files (path
+printed, never base64), and logs go to stderr. Exit code 1 if a step failed (later steps are skipped
+unless `--keep-going`), 2 on usage errors.
 
 ## How it works
 
@@ -231,7 +287,12 @@ Typical agent loop: `screenshot` → decide → `click` / `type_text` / `press_k
 ## Things to know
 
 - **One controlling KVM session per card.** Using the tools takes control from an open browser
-  viewer (the viewer gets a "Permission Requested" prompt and loses control after ~30 s).
+  viewer (the viewer gets a "Permission Requested" prompt and loses control after ~30 s). If the
+  viewer denies or blocks the request, the tools say so: close the viewer and retry.
+- **KVM error "RSV1 must be clear" / "KVM service is not answering"**: the card's KVM service is
+  stuck. Its web server then writes a plain HTTP reply into the KVM websocket, which shows up as an
+  RSV1 frame error. It is not a compression problem. Restart the card (Maintenance → BMC Reset, or
+  `kvm_reset` with `ASUS_IPMI_ALLOW_BMC_RESET=1`); the host keeps running.
 - **Black screen / "no signal"** usually means the host display is asleep. `screenshot` nudges the
   mouse to wake it. For unattended work, disable screen blanking on the host.
 - **No monitor needed** on the host: the card provides the display. A monitor attached to the board's
@@ -259,6 +320,7 @@ physical access over the network.
 
 ```bash
 npm install
+npm test                                                # unit tests against a fake card, no hardware
 node bin/asus-ipmi-mcp.js login <card address>          # once
 ASUS_IPMI_HOST=<card address> npm run smoke             # read-only tools + one screenshot
 ```
