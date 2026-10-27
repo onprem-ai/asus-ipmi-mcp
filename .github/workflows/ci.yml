@@ -10,6 +10,8 @@ jobs:
       - run: npm ci
       - name: Syntax check
         run: for f in bin/*.js src/*.js test/*.js; do node --check "$f"; done
+      - name: Unit tests (fake card, no hardware)
+        run: npm test
       - name: Server starts and lists tools
         run: |
           printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}' \
